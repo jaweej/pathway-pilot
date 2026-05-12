@@ -1,0 +1,4 @@
+interface:
+  display_name: "Add Generation Technology"
+  short_description: "Add a generator technology to PyPSA"
+  default_prompt: "Use $add-generation-technology to add a new generation technology to the pathway-pilot PyPSA model."

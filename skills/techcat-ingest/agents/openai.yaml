@@ -1,0 +1,4 @@
+interface:
+  display_name: "TechCat Ingest"
+  short_description: "Ingest TechCat XLSX technology costs"
+  default_prompt: "Use $techcat-ingest to extract technology efficiencies, CAPEX, variable OPEX, and fixed OPEX from a TechCat XLSX file."

@@ -11,3 +11,4 @@ def test_config_loads_period_weights():
     assert cfg.eurdkk == 7.47
     assert cfg.gas_price_eur_per_mwh_fuel[2050] == 85 * 3.6 / 7.47
     assert cfg.capacity_limits_mw["wind"] > 0
+    assert cfg.capacity_limits_mw["gas_turbine_cc"] > 0

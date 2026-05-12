@@ -22,3 +22,4 @@ capacity_limits_mw:
   wind: 50000
   solar: 50000
   gas_turbine: 100000
+  gas_turbine_cc: 100000

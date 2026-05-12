@@ -40,7 +40,7 @@ def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
     )
 
     network.add("Bus", "electricity", carrier="electricity")
-    for carrier in ["electricity", "wind", "solar", "gas", "load_shedding"]:
+    for carrier in ["electricity", "wind", "solar", "gas", "gas_turbine_cc", "load_shedding"]:
         network.add("Carrier", carrier)
     network.add("Load", "demand", bus="electricity", p_set=data.demand_series)
 
@@ -87,6 +87,26 @@ def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
             network,
             f"gas_turbine_{build_year}",
             _period_value(gas_tech.unit_capex_by_period, build_year),
+        )
+
+    gas_cc_tech = technology_assumptions["gas_turbine_cc"]
+    for build_year in cfg.investment_periods:
+        network.add(
+            "Generator",
+            f"gas_turbine_cc_{build_year}",
+            bus="electricity",
+            carrier="gas_turbine_cc",
+            p_nom_extendable=True,
+            p_nom_max=cfg.capacity_limits_mw["gas_turbine_cc"],
+            capital_cost=_period_value(gas_cc_tech.capital_cost_by_period, build_year),
+            marginal_cost=_period_value(gas_cc_tech.marginal_cost_by_period, build_year),
+            build_year=build_year,
+            lifetime=gas_cc_tech.lifetime_years,
+        )
+        _set_unit_capex(
+            network,
+            f"gas_turbine_cc_{build_year}",
+            _period_value(gas_cc_tech.unit_capex_by_period, build_year),
         )
 
     network.add(

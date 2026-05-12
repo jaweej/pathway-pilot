@@ -1,0 +1,4 @@
+interface:
+  display_name: "Capacity Factor Ingest"
+  short_description: "Ingest hourly technology capacity factors"
+  default_prompt: "Use $capacity-factor-ingest to extract hourly capacity factors by technology and price area into the pathway-pilot long-form schema."

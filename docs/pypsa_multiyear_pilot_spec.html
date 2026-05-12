@@ -175,7 +175,7 @@
 <body>
 <header>
   <h1>Bare-bones multi-year PyPSA pathway model</h1>
-  <p>Implementation spec for a one-zone power-only pilot covering 2030, 2040 and 2050. Linear capacity expansion and dispatch with wind, solar, gas turbine and load shedding. Solver: HiGHS. Development style: red/green TDD.</p>
+  <p>Implementation spec for a one-zone power-only pilot covering 2030, 2040 and 2050. Linear capacity expansion and dispatch with wind, solar, gas turbines and load shedding. Solver: HiGHS. Development style: red/green TDD.</p>
 </header>
 
 <main>
@@ -218,15 +218,15 @@
     </div>
     <div class="card">
       <strong>Technologies</strong>
-      Wind, solar, gas turbine, load shedding.
+      Wind, solar, simple-cycle gas turbine, combined-cycle gas turbine, load shedding.
     </div>
   </div>
 
   <h3>Decision variables</h3>
   <table>
     <tr><th>Variable</th><th>Description</th></tr>
-    <tr><td>Capacity</td><td>Endogenous capacity for wind, solar and gas turbine by build year.</td></tr>
-    <tr><td>Dispatch</td><td>Hourly generation from wind, solar, gas turbine and load shedding.</td></tr>
+    <tr><td>Capacity</td><td>Endogenous capacity for wind, solar, simple-cycle gas turbine and combined-cycle gas turbine by build year.</td></tr>
+    <tr><td>Dispatch</td><td>Hourly generation from wind, solar, gas turbines and load shedding.</td></tr>
   </table>
 
   <h3>Objective</h3>
@@ -240,7 +240,7 @@
     <tr><th>Constraint</th><th>Purpose</th></tr>
     <tr><td>Hourly power balance</td><td>Demand must be met in every hour and period.</td></tr>
     <tr><td>RES availability</td><td>Wind and solar dispatch limited by hourly capacity factors.</td></tr>
-    <tr><td>Capacity potentials</td><td>Maximum buildable wind and solar capacity.</td></tr>
+    <tr><td>Capacity potentials</td><td>Maximum buildable capacity by technology.</td></tr>
     <tr><td>Lifetime logic</td><td>Capacity built in earlier periods remains active if lifetime allows.</td></tr>
     <tr><td>Load shedding</td><td>High-cost feasibility backstop.</td></tr>
   </table>
@@ -364,7 +364,8 @@ load_shedding:
 capacity_limits_mw:
   wind: 50000
   solar: 50000
-  gas_turbine: 100000</code></pre>
+  gas_turbine: 100000
+  gas_turbine_cc: 100000</code></pre>
 
   <div class="note">
     All model costs and outputs are in EUR. Gas prices are configured in DKK/GJ fuel and
@@ -372,7 +373,8 @@ capacity_limits_mw:
     <code>EURDKK = 7.47</code>, when loading the config.
     The implemented model calculates gas marginal cost as converted gas price divided by
     electrical efficiency plus variable O&amp;M from
-    <code>gas_turbine_simple_cycle_large.parquet</code>. Annualised capital cost is derived
+    <code>gas_turbine_simple_cycle_large.parquet</code> and
+    <code>gas_turbine_cc_steam_extract.parquet</code>. Annualised capital cost is derived
     from TechCat investment cost, fixed O&amp;M, lifetime and <code>discount_rate</code>.
   </div>
 </section>
@@ -447,6 +449,13 @@ capacity_limits_mw:
     The script writes
     <code>DEV_DATA_DIR\pathway-pilot\tech\gas_turbine_simple_cycle_large.parquet</code>.
   </p>
+  <p>
+    The combined-cycle gas turbine uses TechCat sheet
+    <code>05 Gas turb. CC, steam extract.</code> and is prepared as
+    <code>DEV_DATA_DIR\pathway-pilot\tech\gas_turbine_cc_steam_extract.parquet</code>.
+    It uses the same schema and interpolates <code>2040</code> between <code>2030</code>
+    and <code>2050</code> when no 2040 control column is present.
+  </p>
   <table>
     <tr><th>column</th><th>meaning</th></tr>
     <tr><td>year</td><td>2015, 2020, 2030, interpolated 2040, and 2050.</td></tr>
@@ -513,7 +522,7 @@ DEV_DATA_DIR\pathway-pilot\tech\utility_scale_pv.parquet</code></pre>
     <tr><td>Solar capacity factor</td><td>Use <code>technology = solar</code> and <code>zone = DKW1</code> from the PECD Parquet file.</td></tr>
     <tr><td>Demand</td><td>Sum <code>DKE1</code> and <code>DKW1</code> hourly demand by <code>target_year</code>, <code>weather_year</code> and <code>timestamp</code>.</td></tr>
     <tr><td>2050 time series</td><td>Use the same demand and capacity-factor time series as <code>2040</code>, relabelled to model period <code>2050</code>.</td></tr>
-    <tr><td>Technology costs</td><td>Read wind, solar and gas costs from the prepared TechCat Parquet files in <code>DEV_DATA_DIR\pathway-pilot\tech</code>.</td></tr>
+    <tr><td>Technology costs</td><td>Read wind, solar, simple-cycle gas and combined-cycle gas costs from the prepared TechCat Parquet files in <code>DEV_DATA_DIR\pathway-pilot\tech</code>.</td></tr>
     <tr><td>Gas marginal cost</td><td>Convert configured DKK/GJ gas prices to EUR/MWh fuel using <code>EUR/MWh = DKK/GJ × 3.6 / 7.47</code>, then combine with gas-turbine efficiency and variable O&amp;M from the gas TechCat Parquet file.</td></tr>
   </table>
 
@@ -561,7 +570,7 @@ DEV_DATA_DIR\pathway-pilot\tech\utility_scale_pv.parquet</code></pre>
   <pre><code>def test_network_contains_core_components():
     network = build_network(cfg, data)
     assert "electricity" in network.buses.index
-    assert {"wind", "solar", "gas_turbine", "load_shedding"}.issubset(network.generators.index)</code></pre>
+    assert {"wind_2030", "solar_2030", "gas_turbine_2030", "gas_turbine_cc_2030", "load_shedding"}.issubset(network.generators.index)</code></pre>
 
   <p><span class="green">Green:</span> create one bus, one load, one load-shedding generator and one extendable generator per technology-build-year. With pandas 3/PyPSA 1.2.0, normalise PyPSA component string columns back to plain object dtype before solving.</p>
 
@@ -603,7 +612,7 @@ DEV_DATA_DIR\pathway-pilot\tech\utility_scale_pv.parquet</code></pre>
     network.investment_period_weightings.loc[:, "objective"] = cfg.period_weights
 
     network.add("Bus", "electricity")
-    for carrier in ["electricity", "wind", "solar", "gas", "load_shedding"]:
+    for carrier in ["electricity", "wind", "solar", "gas", "gas_turbine_cc", "load_shedding"]:
         network.add("Carrier", carrier)
 
     network.add(
@@ -643,6 +652,19 @@ DEV_DATA_DIR\pathway-pilot\tech\utility_scale_pv.parquet</code></pre>
             lifetime=tech["gas_turbine"].lifetime_years,
         )
 
+        network.add(
+            "Generator",
+            f"gas_turbine_cc_{build_year}",
+            bus="electricity",
+            carrier="gas_turbine_cc",
+            p_nom_extendable=True,
+            p_nom_max=cfg.capacity_limits_mw["gas_turbine_cc"],
+            capital_cost=tech["gas_turbine_cc"].capital_cost_by_period[build_year],
+            marginal_cost=tech["gas_turbine_cc"].marginal_cost_by_period[build_year],
+            build_year=build_year,
+            lifetime=tech["gas_turbine_cc"].lifetime_years,
+        )
+
     network.add(
         "Generator",
         "load_shedding",
@@ -674,7 +696,8 @@ DEV_DATA_DIR\pathway-pilot\tech\utility_scale_pv.parquet</code></pre>
 
   <pre><code>wind_2030, wind_2040, wind_2050
 solar_2030, solar_2040, solar_2050
-gas_turbine_2030, gas_turbine_2040, gas_turbine_2050</code></pre>
+gas_turbine_2030, gas_turbine_2040, gas_turbine_2050
+gas_turbine_cc_2030, gas_turbine_cc_2040, gas_turbine_cc_2050</code></pre>
 
   <p>
     This makes costs, build years and lifetimes explicit. It also avoids ambiguity about whether a single extendable asset can invest repeatedly at changing costs.
@@ -731,7 +754,7 @@ gas_turbine_2030, gas_turbine_2040, gas_turbine_2050</code></pre>
     <tr><td>M2: Network builds</td><td>PyPSA network has multi-period snapshots and expected components.</td></tr>
     <tr><td>M3: HiGHS solve</td><td>Tiny-fixture smoke test returns optimal solution; full-year solve remains manual/integration only.</td></tr>
     <tr><td>M4: Basic outputs</td><td>Optimal capacities, hourly dispatch and hourly prices are saved to <code>DEV_DATA_DIR\pathway-pilot\output</code>.</td></tr>
-    <tr><td>M5: Replace synthetic inputs</td><td>Prepared PECD capacity factors, TYNDP demand, TechCat wind/solar/gas costs and configured gas prices can be loaded without code changes; DKW1 CFs, DKE1 + DKW1 demand aggregation and 2040-to-2050 reuse are covered by tests.</td></tr>
+    <tr><td>M5: Replace synthetic inputs</td><td>Prepared PECD capacity factors, TYNDP demand, TechCat wind/solar/simple-cycle gas/combined-cycle gas costs and configured gas prices can be loaded without code changes; DKW1 CFs, DKE1 + DKW1 demand aggregation and 2040-to-2050 reuse are covered by tests.</td></tr>
   </table>
 </section>
 

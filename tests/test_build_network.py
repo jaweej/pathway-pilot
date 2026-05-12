@@ -16,7 +16,9 @@ def test_network_contains_core_components():
         "wind_2030",
         "solar_2030",
         "gas_turbine_2030",
+        "gas_turbine_cc_2030",
         "load_shedding",
     }
     assert expected.issubset(network.generators.index)
+    assert network.generators.loc["gas_turbine_cc_2030", "carrier"] == "gas_turbine_cc"
     assert list(network.investment_periods) == [2030, 2040, 2050]

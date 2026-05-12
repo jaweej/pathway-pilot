@@ -38,12 +38,19 @@ FALLBACK_ASSUMPTIONS = {
         marginal_cost_by_period={2030: 200, 2040: 205, 2050: 205},
         lifetime_years=25,
     ),
+    "gas_turbine_cc": TechnologyAssumption(
+        capital_cost_by_period={2030: 86_000, 2040: 84_000, 2050: 82_000},
+        unit_capex_by_period={2030: 883_000, 2040: 867_000, 2050: 851_000},
+        marginal_cost_by_period={2030: 71, 2040: 74, 2050: 73},
+        lifetime_years=25,
+    ),
 }
 
 TECH_FILES = {
     "wind": "onshore_turbines.parquet",
     "solar": "utility_scale_pv.parquet",
     "gas_turbine": "gas_turbine_simple_cycle_large.parquet",
+    "gas_turbine_cc": "gas_turbine_cc_steam_extract.parquet",
 }
 
 
@@ -123,4 +130,7 @@ def load_technology_assumptions(
         "wind": _renewable_assumption(cfg, tables["wind"], cfg.investment_periods),
         "solar": _renewable_assumption(cfg, tables["solar"], cfg.investment_periods),
         "gas_turbine": _gas_assumption(cfg, tables["gas_turbine"], cfg.investment_periods),
+        "gas_turbine_cc": _gas_assumption(
+            cfg, tables["gas_turbine_cc"], cfg.investment_periods
+        ),
     }

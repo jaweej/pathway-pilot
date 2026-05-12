@@ -13,6 +13,9 @@ from pathway_pilot.config import DEV_DATA_DIR
 
 OUTPUT_DIR = DEV_DATA_DIR / "pathway-pilot" / "output"
 DASHBOARD_PATH = OUTPUT_DIR / "pypsa_output_dashboard.html"
+CAPACITY_CARRIERS = ["wind", "solar", "gas", "gas_turbine_cc"]
+DISPATCH_CARRIERS = [*CAPACITY_CARRIERS, "load_shedding"]
+GAS_CARRIERS = ["gas", "gas_turbine_cc"]
 
 
 def _round(value: float, digits: int = 3) -> float:
@@ -43,12 +46,10 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
         .fillna(0)
         .reset_index()
     )
-    for carrier in ["wind", "solar", "gas", "load_shedding"]:
+    for carrier in DISPATCH_CARRIERS:
         if carrier not in dispatch_wide:
             dispatch_wide[carrier] = 0.0
-    dispatch_wide["demand"] = dispatch_wide[
-        ["wind", "solar", "gas", "load_shedding"]
-    ].sum(axis=1)
+    dispatch_wide["demand"] = dispatch_wide[DISPATCH_CARRIERS].sum(axis=1)
 
     prices = prices[prices["bus"] == "electricity"].drop(columns=["bus"])
     hourly = dispatch_wide.merge(prices, on=["period", "timestep"], how="left")
@@ -56,7 +57,7 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
     capacity_rows = capacities.copy()
     capacity_rows["p_nom_opt_mw"] = capacity_rows["p_nom_opt_mw"].clip(lower=0)
     gas_marginal_cost_max = float(
-        capacity_rows.loc[capacity_rows["carrier"] == "gas", "marginal_cost"].max()
+        capacity_rows.loc[capacity_rows["carrier"].isin(GAS_CARRIERS), "marginal_cost"].max()
     )
 
     build_capacity = (
@@ -139,6 +140,7 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
                 "wind",
                 "solar",
                 "gas",
+                "gas_turbine_cc",
                 "load_shedding",
                 "price_eur_per_mwh",
             ],
@@ -184,6 +186,8 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
         "capture": capture,
         "security": security,
         "gasMarginalCostMax": _round(gas_marginal_cost_max),
+        "capacityCarriers": CAPACITY_CARRIERS,
+        "dispatchCarriers": DISPATCH_CARRIERS,
         "weekData": week_data,
         "dateMin": min(row["timestep"][:10] for rows in week_data.values() for row in rows),
         "dateMax": max(row["timestep"][:10] for rows in week_data.values() for row in rows),
@@ -206,6 +210,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       --wind: #2f80ed;
       --solar: #f2b705;
       --gas: #7a5195;
+      --gas-cc: #00a6a6;
       --shed: #c43d3d;
       --demand: #111827;
       --residual: #18a058;
@@ -386,7 +391,8 @@ HTML_TEMPLATE = r"""<!doctype html>
       <div class="legend">
         <span><span class="swatch" style="background:var(--wind)"></span>Wind</span>
         <span><span class="swatch" style="background:var(--solar)"></span>Solar</span>
-        <span><span class="swatch" style="background:var(--gas)"></span>Gas</span>
+        <span><span class="swatch" style="background:var(--gas)"></span>Gas turbine</span>
+        <span><span class="swatch" style="background:var(--gas-cc)"></span>Gas turbine CC</span>
         <span><span class="swatch" style="background:var(--shed)"></span>Load shedding</span>
         <span><span class="swatch" style="background:var(--demand)"></span>Demand</span>
       </div>
@@ -412,12 +418,14 @@ HTML_TEMPLATE = r"""<!doctype html>
 <div class="tooltip" id="tooltip"></div>
 <script>
 const DATA = __DATA__;
-const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058" };
+const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", gas_turbine_cc: "#00a6a6", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058" };
+const LABELS = { wind: "Wind", solar: "Solar", gas: "Gas turbine", gas_turbine_cc: "Gas turbine CC", load_shedding: "Load shedding", demand: "Demand" };
 const tooltip = document.getElementById("tooltip");
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
 const fmt0 = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 const fmt1 = new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const fmt2 = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function labelFor(key) { return LABELS[key] || key.replaceAll("_", " "); }
 
 function showTip(event, html) {
   tooltip.innerHTML = html;
@@ -526,7 +534,7 @@ function renderStackedBars(svgId, rows, xKey, yKey, groups, labelKey, legendId, 
       const value = rawValue / divisor;
       const rectY = y(y0 + value), rectH = y(y0) - y(y0 + value);
       const rect = svgEl("rect", { x: margin.left + i * band + band * 0.2, y: rectY, width: band * 0.6, height: Math.max(rectH, 0), fill: COLORS[group] || "#777", rx: 2 });
-      rect.addEventListener("mousemove", e => showTip(e, `<b>${label}</b><br>${group}: ${options.formatValue ? options.formatValue(value) : fmt.format(value)}`));
+      rect.addEventListener("mousemove", e => showTip(e, `<b>${label}</b><br>${labelFor(group)}: ${options.formatValue ? options.formatValue(value) : fmt.format(value)}`));
       rect.addEventListener("mouseleave", hideTip);
       svg.appendChild(rect);
       y0 += value;
@@ -535,7 +543,7 @@ function renderStackedBars(svgId, rows, xKey, yKey, groups, labelKey, legendId, 
     text.textContent = label;
     svg.appendChild(text);
   });
-  if (legendId) document.getElementById(legendId).innerHTML = groups.map(g => `<span><span class="swatch" style="background:${COLORS[g] || "#777"}"></span>${g.replace("_", " ")}</span>`).join("");
+  if (legendId) document.getElementById(legendId).innerHTML = groups.map(g => `<span><span class="swatch" style="background:${COLORS[g] || "#777"}"></span>${labelFor(g)}</span>`).join("");
 }
 
 function renderGroupedBars(svgId, rows, xKey, yKey, groups, labelKey, legendId, options = {}) {
@@ -566,7 +574,7 @@ function renderGroupedBars(svgId, rows, xKey, yKey, groups, labelKey, legendId, 
         fill: COLORS[group] || "#777",
         rx: 2
       });
-      rect.addEventListener("mousemove", e => showTip(e, `<b>${label}</b><br>${group}: ${options.formatValue ? options.formatValue(value) : fmt.format(value)}`));
+      rect.addEventListener("mousemove", e => showTip(e, `<b>${label}</b><br>${labelFor(group)}: ${options.formatValue ? options.formatValue(value) : fmt.format(value)}`));
       rect.addEventListener("mouseleave", hideTip);
       svg.appendChild(rect);
     });
@@ -574,7 +582,7 @@ function renderGroupedBars(svgId, rows, xKey, yKey, groups, labelKey, legendId, 
     text.textContent = label;
     svg.appendChild(text);
   });
-  if (legendId) document.getElementById(legendId).innerHTML = groups.map(g => `<span><span class="swatch" style="background:${COLORS[g] || "#777"}"></span>${g.replace("_", " ")}</span>`).join("");
+  if (legendId) document.getElementById(legendId).innerHTML = groups.map(g => `<span><span class="swatch" style="background:${COLORS[g] || "#777"}"></span>${labelFor(g)}</span>`).join("");
 }
 
 function renderCapture() {
@@ -601,7 +609,7 @@ function renderCapture() {
     text.textContent = period;
     svg.appendChild(text);
   });
-  document.getElementById("captureLegend").innerHTML = techs.map(g => `<span><span class="swatch" style="background:${COLORS[g]}"></span>${g}</span>`).join("");
+  document.getElementById("captureLegend").innerHTML = techs.map(g => `<span><span class="swatch" style="background:${COLORS[g]}"></span>${labelFor(g)}</span>`).join("");
 }
 
 function renderDuration() {
@@ -636,11 +644,11 @@ function renderWeek() {
   }
   const { width, height, margin } = dims(svg);
   const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
-  const maxY = Math.max(...rows.map(r => Math.max(r.demand, r.wind + r.solar + r.gas + r.load_shedding) / 1000), 1) * 1.05;
+  const maxY = Math.max(...rows.map(r => Math.max(r.demand, DATA.dispatchCarriers.reduce((sum, carrier) => sum + r[carrier], 0)) / 1000), 1) * 1.05;
   const x = scale(0, rows.length - 1, margin.left, margin.left + plotW);
   const y = scale(0, maxY, margin.top + plotH, margin.top);
   addYAxis(svg, margin.left, y, maxY, margin.top, margin.top + plotH, v => fmt1.format(v), "GW");
-  const carriers = ["wind", "solar", "gas", "load_shedding"];
+  const carriers = DATA.dispatchCarriers;
   const band = plotW / rows.length;
   rows.forEach((r, i) => {
     let y0 = 0;
@@ -649,7 +657,8 @@ function renderWeek() {
       const rectY = y(y0 + value);
       const rectH = y(y0) - y(y0 + value);
       const rect = svgEl("rect", { x: x(i) - band * 0.45, y: rectY, width: Math.max(band * 0.9, 1), height: Math.max(rectH, 0), fill: COLORS[carrier] });
-      rect.addEventListener("mousemove", e => showTip(e, `<b>${period} ${r.timestep}</b><br>Demand: ${fmt1.format(r.demand / 1000)} GW<br>Wind: ${fmt1.format(r.wind / 1000)} GW<br>Solar: ${fmt1.format(r.solar / 1000)} GW<br>Gas: ${fmt1.format(r.gas / 1000)} GW<br>Load shedding: ${fmt1.format(r.load_shedding / 1000)} GW<br>Price: ${fmt2.format(r.price_eur_per_mwh)} EUR/MWh`));
+      const dispatchLines = carriers.map(name => `${labelFor(name)}: ${fmt1.format(r[name] / 1000)} GW`).join("<br>");
+      rect.addEventListener("mousemove", e => showTip(e, `<b>${period} ${r.timestep}</b><br>Demand: ${fmt1.format(r.demand / 1000)} GW<br>${dispatchLines}<br>Price: ${fmt2.format(r.price_eur_per_mwh)} EUR/MWh`));
       rect.addEventListener("mouseleave", hideTip);
       svg.appendChild(rect);
       y0 += value;
@@ -681,7 +690,7 @@ function renderAll() {
     DATA.activeCapacity,
     "period",
     "p_nom_opt_mw",
-    ["wind", "solar", "gas"],
+    DATA.capacityCarriers,
     "carrier",
     "capacityLegend",
     {
@@ -696,7 +705,7 @@ function renderAll() {
     DATA.buildCapacity,
     "build_year",
     "p_nom_opt_mw",
-    ["wind", "solar", "gas"],
+    DATA.capacityCarriers,
     "carrier",
     "buildCapacityLegend",
     {
@@ -715,7 +724,7 @@ function renderAll() {
     DATA.buildCapex,
     "build_year",
     "capex_meur_per_mw",
-    ["wind", "solar", "gas"],
+    DATA.capacityCarriers,
     "carrier",
     "capexLegend",
     {
