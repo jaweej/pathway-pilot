@@ -1,0 +1,4 @@
+interface:
+  display_name: "Add Price Area Datasets"
+  short_description: "Add demand and CF data for new price areas"
+  default_prompt: "Use $add-price-area-datasets to add a new price area to pathway-pilot demand and capacity-factor datasets."
