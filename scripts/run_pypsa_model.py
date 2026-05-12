@@ -53,6 +53,7 @@ def run_model_case(
         weather_year=weather_year,
         demand_zones=cfg.demand_zones,
         capacity_factor_zone=cfg.capacity_factor_zone,
+        model_regions=cfg.model_regions,
     )
     network, status, condition = solve_model(cfg, data)
     run_time_seconds = perf_counter() - solve_start
@@ -65,6 +66,22 @@ def run_model_case(
         "active_model": cfg.active_model,
         "demand_zones": list(cfg.demand_zones),
         "capacity_factor_zone": cfg.capacity_factor_zone,
+        "model_regions": {
+            name: {
+                "demand_zones": list(region.demand_zones),
+                "capacity_factor_zone": region.capacity_factor_zone,
+            }
+            for name, region in cfg.model_regions.items()
+        },
+        "interconnectors": [
+            {
+                "name": interconnector.name,
+                "bus0": interconnector.bus0,
+                "bus1": interconnector.bus1,
+                "capacity_mw": interconnector.capacity_mw,
+            }
+            for interconnector in cfg.interconnectors
+        ],
         "weather_year": weather_year,
         "run_at": run_started_at.isoformat(),
     }

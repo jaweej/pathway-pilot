@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from pathway_pilot.model_config import ModelRegion
+
 DEFAULT_DEMAND_ZONES = ("DKE1", "DKW1")
 DEFAULT_CAPACITY_FACTOR_ZONE = "DKW1"
 
@@ -16,10 +18,19 @@ class ModelInputs:
     demand_series: pd.Series
     wind_cf_series: pd.Series
     solar_cf_series: pd.Series
+    demand_by_bus: pd.DataFrame | None = None
+    wind_cf_by_bus: pd.DataFrame | None = None
+    solar_cf_by_bus: pd.DataFrame | None = None
 
     @property
     def snapshots(self) -> pd.MultiIndex:
         return self.demand_series.index
+
+    @property
+    def bus_names(self) -> tuple[str, ...]:
+        if self.demand_by_bus is None:
+            return ("electricity",)
+        return tuple(str(column) for column in self.demand_by_bus.columns)
 
 
 def _snapshot_index(periods: list[int], hours_per_period: int) -> pd.MultiIndex:
@@ -71,13 +82,13 @@ def _series_from_frame(frame: pd.DataFrame, value_column: str) -> pd.Series:
     return pd.Series(frame[value_column].to_numpy(), index=index, name=value_column).sort_index()
 
 
-def build_model_inputs(
+def _build_region_inputs(
     capacity_factors: pd.DataFrame,
     demand: pd.DataFrame,
     periods: list[int],
     weather_year: int,
-    demand_zones: tuple[str, ...] = DEFAULT_DEMAND_ZONES,
-    capacity_factor_zone: str = DEFAULT_CAPACITY_FACTOR_ZONE,
+    demand_zones: tuple[str, ...],
+    capacity_factor_zone: str,
 ) -> ModelInputs:
     cf = capacity_factors[capacity_factors["weather_year"] == weather_year].copy()
     cf = cf[cf["zone"] == capacity_factor_zone]
@@ -99,4 +110,57 @@ def build_model_inputs(
         demand_series=demand_series.astype("float32"),
         wind_cf_series=wind.reindex(demand_series.index).astype("float32"),
         solar_cf_series=solar.reindex(demand_series.index).astype("float32"),
+    )
+
+
+def build_model_inputs(
+    capacity_factors: pd.DataFrame,
+    demand: pd.DataFrame,
+    periods: list[int],
+    weather_year: int,
+    demand_zones: tuple[str, ...] = DEFAULT_DEMAND_ZONES,
+    capacity_factor_zone: str = DEFAULT_CAPACITY_FACTOR_ZONE,
+    model_regions: dict[str, ModelRegion] | None = None,
+) -> ModelInputs:
+    if model_regions is None:
+        return _build_region_inputs(
+            capacity_factors=capacity_factors,
+            demand=demand,
+            periods=periods,
+            weather_year=weather_year,
+            demand_zones=demand_zones,
+            capacity_factor_zone=capacity_factor_zone,
+        )
+
+    region_inputs = {
+        bus: _build_region_inputs(
+            capacity_factors=capacity_factors,
+            demand=demand,
+            periods=periods,
+            weather_year=weather_year,
+            demand_zones=region.demand_zones,
+            capacity_factor_zone=region.capacity_factor_zone,
+        )
+        for bus, region in model_regions.items()
+    }
+    demand_by_bus = pd.concat(
+        {bus: inputs.demand_series for bus, inputs in region_inputs.items()}, axis=1
+    )
+    wind_cf_by_bus = pd.concat(
+        {bus: inputs.wind_cf_series for bus, inputs in region_inputs.items()}, axis=1
+    )
+    solar_cf_by_bus = pd.concat(
+        {bus: inputs.solar_cf_series for bus, inputs in region_inputs.items()}, axis=1
+    )
+    demand_series = demand_by_bus.sum(axis=1).rename("demand_mw")
+    wind_cf_series = wind_cf_by_bus.mean(axis=1).rename("wind")
+    solar_cf_series = solar_cf_by_bus.mean(axis=1).rename("solar")
+
+    return ModelInputs(
+        demand_series=demand_series.astype("float32"),
+        wind_cf_series=wind_cf_series.reindex(demand_series.index).astype("float32"),
+        solar_cf_series=solar_cf_series.reindex(demand_series.index).astype("float32"),
+        demand_by_bus=demand_by_bus.astype("float32"),
+        wind_cf_by_bus=wind_cf_by_bus.astype("float32"),
+        solar_cf_by_bus=solar_cf_by_bus.astype("float32"),
     )

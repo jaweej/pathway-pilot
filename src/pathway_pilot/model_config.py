@@ -10,9 +10,25 @@ import yaml
 
 
 @dataclass(frozen=True)
+class ModelRegion:
+    demand_zones: tuple[str, ...]
+    capacity_factor_zone: str
+
+
+@dataclass(frozen=True)
+class Interconnector:
+    name: str
+    bus0: str
+    bus1: str
+    capacity_mw: float
+
+
+@dataclass(frozen=True)
 class ModelCase:
     demand_zones: tuple[str, ...]
     capacity_factor_zone: str
+    regions: dict[str, ModelRegion]
+    interconnectors: tuple[Interconnector, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -22,6 +38,8 @@ class ModelConfig:
     model_cases: dict[str, ModelCase]
     demand_zones: tuple[str, ...]
     capacity_factor_zone: str
+    model_regions: dict[str, ModelRegion]
+    interconnectors: tuple[Interconnector, ...]
     investment_periods: list[int]
     period_weights: dict[int, float]
     discount_rate: float
@@ -38,6 +56,46 @@ def _int_keyed_float_dict(values: dict[Any, Any], name: str) -> dict[int, float]
     return {int(key): float(value) for key, value in values.items()}
 
 
+def _parse_model_case(name: str, case: dict[str, Any]) -> ModelCase:
+    if "regions" in case:
+        regions = {
+            str(region_name): ModelRegion(
+                demand_zones=tuple(str(zone) for zone in region["demand_zones"]),
+                capacity_factor_zone=str(region["capacity_factor_zone"]),
+            )
+            for region_name, region in case["regions"].items()
+        }
+        demand_zones = tuple(
+            zone for region in regions.values() for zone in region.demand_zones
+        )
+        capacity_factor_zone = str(case.get("capacity_factor_zone", ""))
+    else:
+        demand_zones = tuple(str(zone) for zone in case["demand_zones"])
+        capacity_factor_zone = str(case.get("capacity_factor_zone", "DKW1"))
+        regions = {
+            "electricity": ModelRegion(
+                demand_zones=demand_zones,
+                capacity_factor_zone=capacity_factor_zone,
+            )
+        }
+
+    interconnectors = tuple(
+        Interconnector(
+            name=str(raw_interconnector.get("name", f"{name}_interconnector")),
+            bus0=str(raw_interconnector["bus0"]),
+            bus1=str(raw_interconnector["bus1"]),
+            capacity_mw=float(raw_interconnector["capacity_mw"]),
+        )
+        for raw_interconnector in case.get("interconnectors", [])
+    )
+    return ModelCase(
+        demand_zones=demand_zones,
+        capacity_factor_zone=capacity_factor_zone,
+        regions=regions,
+        interconnectors=interconnectors,
+    )
+
+
 def load_config(path: str | Path) -> ModelConfig:
     with Path(path).open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
@@ -52,10 +110,7 @@ def load_config(path: str | Path) -> ModelConfig:
         {"DK": {"demand_zones": ["DKE1", "DKW1"], "capacity_factor_zone": "DKW1"}},
     )
     model_cases = {
-        str(name): ModelCase(
-            demand_zones=tuple(str(zone) for zone in case["demand_zones"]),
-            capacity_factor_zone=str(case.get("capacity_factor_zone", "DKW1")),
-        )
+        str(name): _parse_model_case(str(name), case)
         for name, case in raw_model_cases.items()
     }
     if active_model not in model_cases:
@@ -96,6 +151,8 @@ def load_config(path: str | Path) -> ModelConfig:
         model_cases=model_cases,
         demand_zones=active_case.demand_zones,
         capacity_factor_zone=active_case.capacity_factor_zone,
+        model_regions=active_case.regions,
+        interconnectors=active_case.interconnectors,
         investment_periods=investment_periods,
         period_weights=period_weights,
         discount_rate=float(raw["discount_rate"]),
@@ -118,4 +175,6 @@ def with_active_model(cfg: ModelConfig, active_model: str) -> ModelConfig:
         active_model=active_model,
         demand_zones=model_case.demand_zones,
         capacity_factor_zone=model_case.capacity_factor_zone,
+        model_regions=model_case.regions,
+        interconnectors=model_case.interconnectors,
     )

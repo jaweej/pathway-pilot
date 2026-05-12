@@ -13,7 +13,7 @@ from pathway_pilot.config import DEV_DATA_DIR
 
 OUTPUT_DIR = DEV_DATA_DIR / "pathway-pilot" / "output"
 DASHBOARD_PATH = OUTPUT_DIR / "pypsa_output_dashboard.html"
-CAPACITY_CARRIERS = ["wind", "solar", "gas", "gas_turbine_cc"]
+CAPACITY_CARRIERS = ["gas_turbine_cc", "gas", "wind", "solar"]
 DISPATCH_CARRIERS = [*CAPACITY_CARRIERS, "load_shedding"]
 GAS_CARRIERS = ["gas", "gas_turbine_cc"]
 
@@ -33,21 +33,68 @@ def _series_points(frame: pd.DataFrame, columns: list[str]) -> list[dict]:
     return records
 
 
-def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
-    capacities = pd.read_parquet(output_dir / "optimal_capacities.parquet")
-    dispatch = pd.read_parquet(output_dir / "hourly_dispatch.parquet")
-    prices = pd.read_parquet(output_dir / "hourly_prices.parquet")
-    metadata_path = output_dir / "model_metadata.json"
-    metadata = (
-        json.loads(metadata_path.read_text(encoding="utf-8"))
-        if metadata_path.exists()
-        else {
-            "active_model": "DK",
-            "demand_zones": ["DKE1", "DKW1"],
-            "capacity_factor_zone": "DKW1",
-            "weather_year": 1982,
-        }
-    )
+def _region_from_generator(generator: str, regions: set[str]) -> str | None:
+    for region in regions:
+        if generator.startswith(f"{region}_"):
+            return region
+    return None
+
+
+def _regional_dispatch(dispatch: pd.DataFrame, region: str, regions: set[str]) -> pd.DataFrame:
+    if "bus" in dispatch.columns:
+        return dispatch[dispatch["bus"] == region].copy()
+    region_by_generator = {
+        generator: _region_from_generator(str(generator), regions)
+        for generator in dispatch["generator"].unique()
+    }
+    return dispatch[dispatch["generator"].map(region_by_generator) == region].copy()
+
+
+def _regional_capacities(capacities: pd.DataFrame, region: str, regions: set[str]) -> pd.DataFrame:
+    if "bus" in capacities.columns:
+        return capacities[capacities["bus"] == region].copy()
+    region_by_generator = {
+        generator: _region_from_generator(str(generator), regions)
+        for generator in capacities["generator"].unique()
+    }
+    return capacities[capacities["generator"].map(region_by_generator) == region].copy()
+
+
+def _regional_imports(flows: pd.DataFrame | None, region: str) -> pd.DataFrame | None:
+    if flows is None or flows.empty:
+        return None
+    rows = []
+    for flow in flows.itertuples(index=False):
+        if flow.bus0 == region:
+            import_mw = -float(flow.flow_bus0_to_bus1_mw)
+        elif flow.bus1 == region:
+            import_mw = float(flow.flow_bus0_to_bus1_mw)
+        else:
+            continue
+        rows.append(
+            {
+                "period": flow.period,
+                "timestep": flow.timestep,
+                "import_mw": import_mw,
+            }
+        )
+    if not rows:
+        return None
+    return pd.DataFrame(rows).groupby(["period", "timestep"], as_index=False)["import_mw"].sum()
+
+
+def _dashboard_payload(
+    capacities: pd.DataFrame,
+    dispatch: pd.DataFrame,
+    prices: pd.DataFrame,
+    metadata: dict,
+    region: str | None = None,
+    flows: pd.DataFrame | None = None,
+) -> dict:
+    regions = set((metadata.get("model_regions") or {}).keys())
+    if region is not None:
+        capacities = _regional_capacities(capacities, region, regions)
+        dispatch = _regional_dispatch(dispatch, region, regions)
 
     dispatch_by_carrier = (
         dispatch.groupby(["period", "timestep", "carrier"], as_index=False)["dispatch_mw"].sum()
@@ -60,10 +107,25 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
     for carrier in DISPATCH_CARRIERS:
         if carrier not in dispatch_wide:
             dispatch_wide[carrier] = 0.0
-    dispatch_wide["demand"] = dispatch_wide[DISPATCH_CARRIERS].sum(axis=1)
 
-    prices = prices[prices["bus"] == "electricity"].drop(columns=["bus"])
+    imports = _regional_imports(flows, region) if region is not None else None
+    if imports is not None:
+        dispatch_wide = dispatch_wide.merge(imports, on=["period", "timestep"], how="left")
+        dispatch_wide["import_mw"] = dispatch_wide["import_mw"].fillna(0.0)
+    else:
+        dispatch_wide["import_mw"] = 0.0
+    dispatch_wide["interconnector_import"] = dispatch_wide["import_mw"].clip(lower=0)
+    dispatch_wide["interconnector_export"] = dispatch_wide["import_mw"].clip(upper=0)
+    dispatch_wide["demand"] = dispatch_wide[DISPATCH_CARRIERS].sum(axis=1) + dispatch_wide[
+        "import_mw"
+    ]
+
+    preferred_bus = region or ("electricity" if "electricity" in set(prices["bus"]) else prices["bus"].iloc[0])
+    prices = prices[prices["bus"] == preferred_bus].drop(columns=["bus"])
     hourly = dispatch_wide.merge(prices, on=["period", "timestep"], how="left")
+    dispatch_carriers = [*DISPATCH_CARRIERS]
+    if region is not None and imports is not None:
+        dispatch_carriers.extend(["interconnector_import", "interconnector_export"])
 
     capacity_rows = capacities.copy()
     capacity_rows["p_nom_opt_mw"] = capacity_rows["p_nom_opt_mw"].clip(lower=0)
@@ -153,6 +215,8 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
                 "gas",
                 "gas_turbine_cc",
                 "load_shedding",
+                "interconnector_import",
+                "interconnector_export",
                 "price_eur_per_mwh",
             ],
         )
@@ -166,9 +230,10 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
         shed_energy_mwh = float(shed.sum())
         demand_energy_mwh = float(group["demand"].sum())
         generation_totals = {
-            "solar": float(group["solar"].clip(lower=0).sum()),
+            "gas_turbine_cc": float(group["gas_turbine_cc"].clip(lower=0).sum()),
+            "gas": float(group["gas"].clip(lower=0).sum()),
             "wind": float(group["wind"].clip(lower=0).sum()),
-            "gas": float(group[GAS_CARRIERS].clip(lower=0).sum(axis=1).sum()),
+            "solar": float(group["solar"].clip(lower=0).sum()),
             "load_shedding": shed_energy_mwh,
         }
         generation_total = sum(generation_totals.values())
@@ -204,7 +269,7 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
                 "gas_generation_twh": _round(group[GAS_CARRIERS].sum(axis=1).sum() / 1_000_000, 3),
                 "voll_eur_per_mwh": _round(
                     capacities.loc[
-                        capacities["generator"] == "load_shedding", "marginal_cost"
+                        capacities["carrier"] == "load_shedding", "marginal_cost"
                     ].iloc[0],
                     2,
                 ),
@@ -230,12 +295,47 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
         "gasMarginalCostMax": _round(gas_marginal_cost_max),
         "capacityCarriers": CAPACITY_CARRIERS,
         "captureTechnologies": [*CAPACITY_CARRIERS, "demand"],
-        "dispatchCarriers": DISPATCH_CARRIERS,
+        "dispatchCarriers": dispatch_carriers,
         "weekData": week_data,
         "dateMin": min(row["timestep"][:10] for rows in week_data.values() for row in rows),
         "dateMax": max(row["timestep"][:10] for rows in week_data.values() for row in rows),
-        "metadata": metadata,
+        "metadata": {**metadata, "selected_region": region},
     }
+
+
+def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
+    capacities = pd.read_parquet(output_dir / "optimal_capacities.parquet")
+    dispatch = pd.read_parquet(output_dir / "hourly_dispatch.parquet")
+    prices = pd.read_parquet(output_dir / "hourly_prices.parquet")
+    flows_path = output_dir / "hourly_interconnector_flows.parquet"
+    flows = pd.read_parquet(flows_path) if flows_path.exists() else None
+    metadata_path = output_dir / "model_metadata.json"
+    metadata = (
+        json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata_path.exists()
+        else {
+            "active_model": "DK",
+            "demand_zones": ["DKE1", "DKW1"],
+            "capacity_factor_zone": "DKW1",
+            "weather_year": 1982,
+        }
+    )
+    data = _dashboard_payload(capacities, dispatch, prices, metadata, flows=flows)
+    model_regions = metadata.get("model_regions") or {}
+    if len(model_regions) > 1:
+        data["regions"] = {
+            region: _dashboard_payload(
+                capacities,
+                dispatch,
+                prices,
+                metadata,
+                region=region,
+                flows=flows,
+            )
+            for region in model_regions
+        }
+        data["defaultRegion"] = next(iter(model_regions))
+    return data
 
 
 def has_output_tables(path: Path) -> bool:
@@ -505,10 +605,12 @@ HTML_TEMPLATE = r"""<!doctype html>
   </div>
   <section id="detailsPanel" class="tab-panel" role="tabpanel" aria-labelledby="detailsTab">
     <div class="controls">
-      <label for="countrySelect">Country</label>
+      <label for="countrySelect">Scenario</label>
       <select id="countrySelect"></select>
       <label for="climateYearSelect">Climate year</label>
       <select id="climateYearSelect"></select>
+      <label id="regionSelectLabel" for="regionSelect" hidden>Region</label>
+      <select id="regionSelect" hidden></select>
     </div>
     <div class="grid">
     <div class="panel">
@@ -545,11 +647,11 @@ HTML_TEMPLATE = r"""<!doctype html>
         <button id="shedWeek" type="button">Highest shedding</button>
       </div>
       <svg id="weekChart"></svg>
-      <div class="legend">
+      <div class="legend" id="weekLegend">
+        <span><span class="swatch" style="background:var(--gas-cc)"></span>Gas turbine CC</span>
+        <span><span class="swatch" style="background:var(--gas)"></span>Gas turbine</span>
         <span><span class="swatch" style="background:var(--wind)"></span>Wind</span>
         <span><span class="swatch" style="background:var(--solar)"></span>Solar</span>
-        <span><span class="swatch" style="background:var(--gas)"></span>Gas turbine</span>
-        <span><span class="swatch" style="background:var(--gas-cc)"></span>Gas turbine CC</span>
         <span><span class="swatch" style="background:var(--shed)"></span>Load shedding</span>
         <span><span class="swatch" style="background:var(--demand)"></span>Demand</span>
       </div>
@@ -597,10 +699,10 @@ const APP_DATA = __DATA__;
 const DATASETS = APP_DATA.datasets || {};
 let DATA;
 let activeWeekPreset = "shed";
-const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", gas_turbine_cc: "#00a6a6", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058" };
+const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", gas_turbine_cc: "#00a6a6", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058", interconnector_import: "#38a3a5", interconnector_export: "#ef8354" };
 const YEAR_COLORS = ["#111827", "#2f80ed", "#18a058", "#c43d3d", "#7a5195"];
 const COUNTRY_COLORS = ["#111827", "#2f80ed", "#18a058", "#c43d3d", "#7a5195", "#00a6a6"];
-const LABELS = { wind: "Wind", solar: "Solar", gas: "Gas turbine", gas_turbine_cc: "Gas turbine CC", load_shedding: "Load shedding", demand: "Demand" };
+const LABELS = { wind: "Wind", solar: "Solar", gas: "Gas turbine", gas_turbine_cc: "Gas turbine CC", load_shedding: "Load shedding", demand: "Demand", interconnector_import: "Import", interconnector_export: "Export" };
 const tooltip = document.getElementById("tooltip");
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
 const fmt0 = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
@@ -613,6 +715,14 @@ function renderModelSummary() {
   const demand = (meta.demand_zones || ["DKE1", "DKW1"]).join(" + ");
   const cfZone = meta.capacity_factor_zone || "DKW1";
   const model = meta.active_model || "DK";
+  const region = meta.selected_region ? `, region ${meta.selected_region}` : "";
+  if (meta.model_regions && meta.selected_region) {
+    const regionMeta = meta.model_regions[meta.selected_region] || {};
+    const regionDemand = (regionMeta.demand_zones || []).join(" + ");
+    document.getElementById("modelSummary").textContent =
+      `${model}${region} capacity expansion and dispatch results. Capacity factors use ${regionMeta.capacity_factor_zone}; demand is ${regionDemand}. The 2050 time series reuses 2040 profiles.`;
+    return;
+  }
   document.getElementById("modelSummary").textContent =
     `One-zone ${model} capacity expansion and dispatch results. Capacity factors use ${cfZone}; demand is ${demand}. The 2050 time series reuses 2040 profiles.`;
 }
@@ -630,6 +740,11 @@ function initCountryControl() {
     rerenderForScenario();
   });
   document.getElementById("climateYearSelect").addEventListener("change", () => {
+    refreshRegionControl();
+    setCurrentDataset();
+    rerenderForScenario();
+  });
+  document.getElementById("regionSelect").addEventListener("change", () => {
     setCurrentDataset();
     rerenderForScenario();
   });
@@ -641,12 +756,40 @@ function refreshClimateControl(preferredYear) {
   const years = Object.keys(DATASETS[country] || {}).sort((a, b) => Number(a) - Number(b));
   select.innerHTML = years.map(year => `<option value="${year}">${year}</option>`).join("");
   select.value = preferredYear && years.includes(String(preferredYear)) ? String(preferredYear) : years[0];
+  refreshRegionControl();
+}
+
+function currentScenarioDataset() {
+  const country = document.getElementById("countrySelect").value;
+  const climateYear = document.getElementById("climateYearSelect").value;
+  return DATASETS[country]?.[climateYear];
+}
+
+function refreshRegionControl() {
+  const scenario = currentScenarioDataset();
+  const select = document.getElementById("regionSelect");
+  const label = document.getElementById("regionSelectLabel");
+  const regions = scenario?.regions ? Object.keys(scenario.regions) : [];
+  const show = regions.length > 0;
+  select.hidden = !show;
+  label.hidden = !show;
+  if (!show) {
+    select.innerHTML = "";
+    return;
+  }
+  const previous = select.value;
+  select.innerHTML = regions.map(region => `<option value="${region}">${region}</option>`).join("");
+  select.value = regions.includes(previous)
+    ? previous
+    : (scenario.defaultRegion && regions.includes(scenario.defaultRegion) ? scenario.defaultRegion : regions[0]);
 }
 
 function setCurrentDataset() {
   const country = document.getElementById("countrySelect").value;
   const climateYear = document.getElementById("climateYearSelect").value;
-  DATA = DATASETS[country][climateYear];
+  const scenario = DATASETS[country][climateYear];
+  const region = document.getElementById("regionSelect").value;
+  DATA = scenario.regions && scenario.regions[region] ? scenario.regions[region] : scenario;
 }
 
 function rerenderForScenario() {
@@ -1014,19 +1157,15 @@ function renderComparisonPrices(items) {
 function renderComparisonGeneration(items) {
   const svg = document.getElementById("comparisonGenerationChart"); clear(svg);
   const { width, height, margin } = dims(svg);
-  const carriers = ["solar", "wind", "gas", "load_shedding"];
+  const carriers = ["gas_turbine_cc", "gas", "wind", "solar", "load_shedding"];
   if (!items.length) {
     addEmpty(svg, "No selected regions have data for this climate year.");
     document.getElementById("comparisonGenerationLegend").innerHTML = "";
     return;
   }
-  const bars = [];
-  items.forEach(item => {
-    const periods = [...new Set((item.data.generationShares || []).map(row => row.period))]
-      .sort((a, b) => Number(a) - Number(b));
-    periods.forEach(period => bars.push({ country: item.country, period, data: item.data }));
-  });
-  if (!bars.length) {
+  const periods = [...new Set(items.flatMap(item => (item.data.generationShares || []).map(row => row.period)))]
+    .sort((a, b) => Number(a) - Number(b));
+  if (!periods.length) {
     addEmpty(svg, "No generation-share data is available.");
     document.getElementById("comparisonGenerationLegend").innerHTML = "";
     return;
@@ -1034,31 +1173,50 @@ function renderComparisonGeneration(items) {
   const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
   const y = scale(0, 100, margin.top + plotH, margin.top);
   addYAxis(svg, margin.left, y, 100, margin.top, margin.top + plotH, v => `${fmt0.format(v)}%`, "Share");
-  const band = plotW / bars.length;
-  bars.forEach((bar, i) => {
-    const rows = bar.data.generationShares || [];
-    let y0 = 0;
-    carriers.forEach(carrier => {
-      const row = rows.find(item => item.period === bar.period && item.carrier === carrier);
-      const value = row ? row.share : 0;
-      const rectY = y(y0 + value), rectH = y(y0) - y(y0 + value);
-      const rect = svgEl("rect", {
-        x: margin.left + i * band + band * 0.18,
-        y: rectY,
-        width: band * 0.64,
-        height: Math.max(rectH, 0),
-        fill: COLORS[carrier],
-        rx: 2
+  const periodBand = plotW / periods.length;
+  const groupGap = periodBand * 0.16;
+  const innerW = periodBand - groupGap * 2;
+  const barW = innerW / items.length;
+  periods.forEach((period, periodIndex) => {
+    items.forEach((region, regionIndex) => {
+      const rows = region.data.generationShares || [];
+      let y0 = 0;
+      carriers.forEach(carrier => {
+        const row = rows.find(item => item.period === period && item.carrier === carrier);
+        const value = row ? row.share : 0;
+        const rectY = y(y0 + value), rectH = y(y0) - y(y0 + value);
+        const x = margin.left + periodIndex * periodBand + groupGap + regionIndex * barW + barW * 0.1;
+        const rect = svgEl("rect", {
+          x,
+          y: rectY,
+          width: barW * 0.8,
+          height: Math.max(rectH, 0),
+          fill: COLORS[carrier],
+          rx: 2
+        });
+        const energy = row ? row.energy_twh : 0;
+        rect.addEventListener("mousemove", e => showTip(e, `<b>${region.country} ${period}</b><br>${generationShareLabel(carrier)}: ${fmt1.format(value)}%<br>${fmt2.format(energy)} TWh`));
+        rect.addEventListener("mouseleave", hideTip);
+        svg.appendChild(rect);
+        y0 += value;
       });
-      const energy = row ? row.energy_twh : 0;
-      rect.addEventListener("mousemove", e => showTip(e, `<b>${bar.country} ${bar.period}</b><br>${generationShareLabel(carrier)}: ${fmt1.format(value)}%<br>${fmt2.format(energy)} TWh`));
-      rect.addEventListener("mouseleave", hideTip);
-      svg.appendChild(rect);
-      y0 += value;
+      const regionText = svgEl("text", {
+        x: margin.left + periodIndex * periodBand + groupGap + regionIndex * barW + barW / 2,
+        y: height - 24,
+        "text-anchor": "middle",
+        class: "tick"
+      });
+      regionText.textContent = region.country;
+      svg.appendChild(regionText);
     });
-    const text = svgEl("text", { x: margin.left + i * band + band / 2, y: height - 12, "text-anchor": "middle", class: "tick" });
-    text.textContent = `${bar.country} ${bar.period}`;
-    svg.appendChild(text);
+    const periodText = svgEl("text", {
+      x: margin.left + periodIndex * periodBand + periodBand / 2,
+      y: height - 8,
+      "text-anchor": "middle",
+      class: "tick"
+    });
+    periodText.textContent = period;
+    svg.appendChild(periodText);
   });
   document.getElementById("comparisonGenerationLegend").innerHTML = carriers.map(carrier => `<span><span class="swatch" style="background:${COLORS[carrier]}"></span>${generationShareLabel(carrier)}</span>`).join("");
 }
@@ -1079,28 +1237,48 @@ function renderWeek() {
   }
   const { width, height, margin } = dims(svg);
   const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
-  const maxY = Math.max(...rows.map(r => Math.max(r.demand, DATA.dispatchCarriers.reduce((sum, carrier) => sum + r[carrier], 0)) / 1000), 1) * 1.05;
-  const x = scale(0, rows.length - 1, margin.left, margin.left + plotW);
-  const y = scale(0, maxY, margin.top + plotH, margin.top);
-  addYAxis(svg, margin.left, y, maxY, margin.top, margin.top + plotH, v => fmt1.format(v), "GW");
   const carriers = DATA.dispatchCarriers;
+  const positiveTotals = rows.map(r => carriers.reduce((sum, carrier) => sum + Math.max(r[carrier] || 0, 0), 0) / 1000);
+  const negativeTotals = rows.map(r => carriers.reduce((sum, carrier) => sum + Math.min(r[carrier] || 0, 0), 0) / 1000);
+  const maxY = Math.max(...rows.map(r => r.demand / 1000), ...positiveTotals, 1) * 1.05;
+  const minY = Math.min(...negativeTotals, 0) * 1.05;
+  const x = scale(0, rows.length - 1, margin.left, margin.left + plotW);
+  const y = scale(minY, maxY, margin.top + plotH, margin.top);
+  const axisMax = Math.max(Math.abs(minY), Math.abs(maxY));
+  addYAxis(svg, margin.left, y, maxY, margin.top, margin.top + plotH, v => fmt1.format(v), "GW");
+  if (minY < 0) {
+    svg.appendChild(svgEl("line", { x1: margin.left, x2: width - margin.right, y1: y(0), y2: y(0), stroke: "#7c8794", "stroke-width": 1.2 }));
+    for (let i = 1; i <= 2; i++) {
+      const value = -axisMax * i / 2;
+      const text = svgEl("text", { x: margin.left - 8, y: y(value) + 4, "text-anchor": "end", class: "tick" });
+      text.textContent = fmt1.format(value);
+      svg.appendChild(text);
+    }
+  }
   const band = plotW / rows.length;
   rows.forEach((r, i) => {
-    let y0 = 0;
+    let positiveY0 = 0;
+    let negativeY0 = 0;
     carriers.forEach(carrier => {
-      const value = r[carrier] / 1000;
-      const rectY = y(y0 + value);
-      const rectH = y(y0) - y(y0 + value);
+      const value = (r[carrier] || 0) / 1000;
+      const base = value >= 0 ? positiveY0 : negativeY0;
+      const next = base + value;
+      const rectY = value >= 0 ? y(next) : y(base);
+      const rectH = Math.abs(y(base) - y(next));
       const rect = svgEl("rect", { x: x(i) - band * 0.45, y: rectY, width: Math.max(band * 0.9, 1), height: Math.max(rectH, 0), fill: COLORS[carrier] });
-      const dispatchLines = carriers.map(name => `${labelFor(name)}: ${fmt1.format(r[name] / 1000)} GW`).join("<br>");
+      const dispatchLines = carriers.map(name => `${labelFor(name)}: ${fmt1.format((r[name] || 0) / 1000)} GW`).join("<br>");
       rect.addEventListener("mousemove", e => showTip(e, `<b>${period} ${r.timestep}</b><br>Demand: ${fmt1.format(r.demand / 1000)} GW<br>${dispatchLines}<br>Price: ${fmt2.format(r.price_eur_per_mwh)} EUR/MWh`));
       rect.addEventListener("mouseleave", hideTip);
       svg.appendChild(rect);
-      y0 += value;
+      if (value >= 0) positiveY0 = next;
+      else negativeY0 = next;
     });
   });
   const demandLine = rows.map((r, i) => ({ x: i, y: r.demand / 1000 }));
   svg.appendChild(svgEl("path", { d: pathLine(demandLine, x, y), fill: "none", stroke: COLORS.demand, "stroke-width": 2.2 }));
+  document.getElementById("weekLegend").innerHTML = [...carriers, "demand"]
+    .map(carrier => `<span><span class="swatch" style="background:${COLORS[carrier]}"></span>${labelFor(carrier)}</span>`)
+    .join("");
 }
 
 function clampDate(dateText) {
@@ -1110,7 +1288,9 @@ function clampDate(dateText) {
 }
 
 function presetDate(monthDay) {
-  const year = document.getElementById("weekPeriod").value || DATA.dateMin.slice(0, 4);
+  const period = document.getElementById("weekPeriod").value;
+  const rows = DATA.weekData[period] || [];
+  const year = (rows[0]?.timestep || DATA.dateMin).slice(0, 4);
   return clampDate(`${year}-${monthDay}`);
 }
 

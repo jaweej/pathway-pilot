@@ -10,6 +10,19 @@ model_cases:
   NL:
     demand_zones: [NL00]
     capacity_factor_zone: NL00
+  DK_NL:
+    regions:
+      DK:
+        demand_zones: [DKE1, DKW1]
+        capacity_factor_zone: DKW1
+      NL:
+        demand_zones: [NL00]
+        capacity_factor_zone: NL00
+    interconnectors:
+      - name: DK_NL_interconnector
+        bus0: DK
+        bus1: NL
+        capacity_mw: 1000
 
 period_weights:
   2030: 10

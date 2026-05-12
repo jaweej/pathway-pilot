@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SEW Computation Spec - Forced Capacity in Pathway Pilot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #fbfaf6;
+    --bg-alt: #f3efe5;
+    --bg-code: #f1ede0;
+    --ink: #1a1a1a;
+    --ink-muted: #5c5852;
+    --ink-faint: #888278;
+    --rule: #d8d3c7;
+    --rule-soft: #e8e3d6;
+    --accent: #8b3a1f;
+    --accent-soft: #b87454;
+    --ok: #4a6e3a;
+    --warn: #a05d10;
+
+    --serif-display: "Fraunces", Georgia, serif;
+    --serif-body: "Source Serif 4", Georgia, serif;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--serif-body);
+    font-size: 16.5px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* ---------- Page frame ---------- */
+  .page {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 80px 56px 120px;
+  }
+
+  /* ---------- Masthead ---------- */
+  .masthead {
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 36px;
+    margin-bottom: 56px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 32px;
+    align-items: end;
+  }
+  .masthead .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 18px;
+  }
+  .masthead h1 {
+    font-family: var(--serif-display);
+    font-weight: 500;
+    font-size: 42px;
+    line-height: 1.08;
+    letter-spacing: -0.01em;
+    margin: 0 0 16px;
+    font-variation-settings: "opsz" 120;
+  }
+  .masthead h1 em {
+    font-style: italic;
+    color: var(--accent);
+    font-variation-settings: "opsz" 144;
+  }
+  .masthead .subtitle {
+    font-family: var(--serif-body);
+    font-size: 17px;
+    color: var(--ink-muted);
+    font-style: italic;
+    max-width: 560px;
+    margin: 0;
+  }
+  .masthead .meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-faint);
+    text-align: right;
+    line-height: 1.8;
+    letter-spacing: 0.03em;
+  }
+  .masthead .meta strong {
+    color: var(--ink);
+    font-weight: 500;
+    display: block;
+  }
+
+  /* ---------- TOC ---------- */
+  .toc {
+    background: var(--bg-alt);
+    border: 1px solid var(--rule);
+    padding: 22px 28px;
+    margin-bottom: 56px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  .toc .toc-label {
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 10.5px;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  .toc ol {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    columns: 2;
+    column-gap: 36px;
+  }
+  .toc li {
+    padding: 3px 0;
+    break-inside: avoid;
+  }
+  .toc a {
+    color: var(--ink);
+    text-decoration: none;
+    border-bottom: 1px dotted transparent;
+    transition: border-color 0.15s;
+  }
+  .toc a:hover { border-bottom-color: var(--accent); }
+  .toc .num {
+    color: var(--ink-faint);
+    margin-right: 10px;
+    display: inline-block;
+    width: 24px;
+  }
+
+  /* ---------- Sections ---------- */
+  section {
+    margin-bottom: 56px;
+    scroll-margin-top: 24px;
+  }
+  section > h2 {
+    font-family: var(--serif-display);
+    font-weight: 500;
+    font-size: 26px;
+    line-height: 1.2;
+    letter-spacing: -0.005em;
+    margin: 0 0 4px;
+    font-variation-settings: "opsz" 60;
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+  }
+  section > h2 .section-num {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
+    padding-top: 2px;
+  }
+  section > h2 + .section-lead {
+    margin-left: 0;
+    color: var(--ink-muted);
+    font-style: italic;
+    font-size: 16px;
+    margin-top: 0;
+    margin-bottom: 24px;
+    border-bottom: 1px solid var(--rule-soft);
+    padding-bottom: 18px;
+  }
+
+  h3 {
+    font-family: var(--serif-display);
+    font-weight: 600;
+    font-size: 17px;
+    margin: 28px 0 10px;
+    font-variation-settings: "opsz" 30;
+    color: var(--ink);
+  }
+
+  p { margin: 0 0 14px; }
+  p + p { margin-top: 0; }
+
+  /* ---------- Inline emphasis ---------- */
+  strong { font-weight: 600; color: var(--ink); }
+  em { font-style: italic; }
+  a { color: var(--accent); }
+
+  /* Equation block */
+  .eqn {
+    font-family: var(--mono);
+    font-size: 14.5px;
+    background: var(--bg-alt);
+    border-left: 3px solid var(--accent);
+    padding: 16px 22px;
+    margin: 18px 0 22px;
+    color: var(--ink);
+    line-height: 1.7;
+  }
+  .eqn .lhs { color: var(--accent); font-weight: 600; }
+  .eqn .note {
+    display: block;
+    margin-top: 8px;
+    font-family: var(--serif-body);
+    font-size: 14px;
+    font-style: italic;
+    color: var(--ink-muted);
+  }
+
+  /* Code blocks */
+  pre {
+    background: var(--bg-code);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    padding: 18px 22px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 14px 0 22px;
+    color: #2a2622;
+  }
+  pre .kw  { color: #8b3a1f; }
+  pre .com { color: #7d7568; font-style: italic; }
+  pre .str { color: #4a6e3a; }
+  pre .num { color: #a05d10; }
+  pre .fn  { color: #2c5a7e; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--bg-code);
+    padding: 1px 6px;
+    border-radius: 2px;
+    color: #2a2622;
+  }
+  pre code { background: none; padding: 0; font-size: 13px; }
+
+  /* Lists */
+  ul, ol {
+    padding-left: 22px;
+    margin: 0 0 18px;
+  }
+  li { margin-bottom: 6px; }
+  li::marker { color: var(--accent); }
+
+  /* Callouts */
+  .callout {
+    border: 1px solid var(--rule);
+    background: var(--bg-alt);
+    padding: 18px 22px;
+    margin: 20px 0;
+    position: relative;
+  }
+  .callout .callout-label {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+  .callout.warn { background: #f9efde; border-color: #e8d4a8; }
+  .callout.warn .callout-label { color: var(--warn); }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 18px 0;
+    font-size: 14.5px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+  th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+    border-bottom: 1.5px solid var(--rule);
+    background: transparent;
+  }
+  td.mono { font-family: var(--mono); font-size: 12.5px; }
+  td .symbol { font-family: var(--mono); font-weight: 600; }
+
+  /* Footer */
+  .colophon {
+    margin-top: 80px;
+    padding-top: 24px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-faint);
+    letter-spacing: 0.04em;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* Drop cap on first section */
+  section:first-of-type p:first-of-type::first-letter {
+    font-family: var(--serif-display);
+    font-size: 3.6em;
+    line-height: 0.85;
+    float: left;
+    padding: 6px 10px 0 0;
+    font-weight: 500;
+    color: var(--accent);
+    font-variation-settings: "opsz" 144;
+  }
+
+  /* Print */
+  @media print {
+    body { background: white; font-size: 11pt; }
+    .page { max-width: none; padding: 0; }
+    pre, .callout, .eqn, .toc { break-inside: avoid; }
+    .toc { background: white; }
+    section { break-inside: avoid-page; }
+    a { color: var(--ink); }
+  }
+
+  /* Narrow screens */
+  @media (max-width: 720px) {
+    .page { padding: 40px 24px 80px; }
+    .masthead { grid-template-columns: 1fr; }
+    .masthead .meta { text-align: left; }
+    .masthead h1 { font-size: 32px; }
+    .toc ol { columns: 1; }
+    section > h2 { font-size: 22px; flex-wrap: wrap; gap: 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div>
+      <div class="eyebrow">Implementation Specification</div>
+      <h1>Computing socioeconomic welfare effects of a <em>forced</em> capacity addition in Pathway Pilot</h1>
+      <p class="subtitle">Two-run methodology for the current single-bus, multi-investment-period PyPSA pilot, with decomposition into CAPEX, OPEX, load shedding, and prices.</p>
+    </div>
+    <div class="meta">
+      <strong>SEW-FORCED-01</strong>
+      Rev. 2026-05-12<br>
+      Audience: model analyst<br>
+      Tooling: PyPSA + HiGHS
+    </div>
+  </header>
+
+  <nav class="toc" aria-label="Table of contents">
+    <div class="toc-label">Contents</div>
+    <ol>
+      <li><a href="#sec-1"><span class="num">§1</span>Scope &amp; framing</a></li>
+      <li><a href="#sec-2"><span class="num">§2</span>Theoretical foundation</a></li>
+      <li><a href="#sec-3"><span class="num">§3</span>Two-run setup</a></li>
+      <li><a href="#sec-4"><span class="num">§4</span>Headline metric ΔSEW</a></li>
+      <li><a href="#sec-5"><span class="num">§5</span>Decomposition</a></li>
+      <li><a href="#sec-6"><span class="num">§6</span>Reference implementation</a></li>
+      <li><a href="#sec-7"><span class="num">§7</span>Emissions treatment</a></li>
+      <li><a href="#sec-8"><span class="num">§8</span>Model scope limits</a></li>
+      <li><a href="#sec-9"><span class="num">§9</span>Multiple optima &amp; robustness</a></li>
+      <li><a href="#sec-10"><span class="num">§10</span>Reporting template</a></li>
+    </ol>
+  </nav>
+
+  <!-- ============================================================== -->
+  <section id="sec-1">
+    <h2><span class="section-num">§1</span> Scope &amp; framing</h2>
+    <p class="section-lead">What this spec covers and the modelling assumptions behind it.</p>
+
+    <p>The objective is to quantify the socioeconomic welfare (SEW) effect of forcing additional capacity into the current Pathway Pilot PyPSA model. The live model is a single electricity bus with multi-investment periods, not a zonal market model. It contains extendable <code>wind</code>, <code>solar</code>, <code>gas</code>, and <code>gas_turbine_cc</code> generators for each investment period, plus fixed high-cost <code>load_shedding</code>. There is no offshore wind generator, transmission topology, storage, CO<sub>2</sub> cap, or explicit emissions carrier in the current codebase.</p>
+
+    <p>The forcing is treated as an exogenous policy scenario. All inputs and all non-forced technologies remain identical and free to re-optimise unless a robustness stage explicitly fixes capacities.</p>
+
+    <p>The methodology rests on three standing assumptions, each consistent with the default PyPSA formulation:</p>
+
+    <ul>
+      <li><strong>Inelastic demand.</strong> Load is given exogenously from TYNDP-derived or synthetic time series; consumer surplus changes only via the price–quantity product, not via demand response.</li>
+      <li><strong>Perfect competition / no market power.</strong> The LP optimum coincides with the competitive equilibrium; the shadow price of the nodal balance constraint is the wholesale price.</li>
+      <li><strong>Multi-period annualised costs.</strong> <code>capital_cost</code> is annuitised from TechCat investment cost, fixed O&amp;M, lifetime, and <code>discount_rate</code>. The PyPSA objective is weighted by <code>period_weights</code>, currently 10 years for 2030, 2040, and 2050.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================== -->
+  <section id="sec-2">
+    <h2><span class="section-num">§2</span> Theoretical foundation</h2>
+    <p class="section-lead">Why welfare equals minus total system cost, up to a constant.</p>
+
+    <p>With inelastic demand, gross consumer benefit <span class="symbol"><code>B</code></span> is a constant independent of supply decisions. Total welfare is then</p>
+
+    <div class="eqn">
+      <span class="lhs">W</span> = B − TC(x)
+      <span class="note">where TC(x) is total weighted system cost and x is the vector of capacity and dispatch decisions.</span>
+    </div>
+
+    <p>Maximising W is dual to minimising TC. Comparing two runs that share the same B:</p>
+
+    <div class="eqn">
+      <span class="lhs">ΔSEW</span> = W<sub>forced</sub> − W<sub>free</sub> = −(TC<sub>forced</sub> − TC<sub>free</sub>) = −(<code>n_forced.objective</code> − <code>n_free.objective</code>)
+    </div>
+
+    <p>When the forced run imposes an additional binding lower bound relative to the free optimum, its feasible region is smaller and the minimum cost can only rise. The sign convention above therefore gives ΔSEW ≤ 0 for a costly forced build. If the forced capacity is below or equal to the free optimum, the constraint is non-binding and ΔSEW should be zero within solver tolerance.</p>
+  </section>
+
+  <!-- ============================================================== -->
+  <section id="sec-3">
+    <h2><span class="section-num">§3</span> Two-run setup</h2>
+    <p class="section-lead">Network preparation for the unrestricted and forced cases.</p>
+
+    <p>Both runs must share identical input data: <code>active_model</code>, demand zones, capacity-factor zone, climate/weather year, gas prices, technology costs, capacity limits, snapshot index, and investment-period weights. Only the selected generator's capacity treatment differs.</p>
+
+    <table>
+      <thead>
+        <tr><th>Element</th><th>Run 1 — free</th><th>Run 2 — forced</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Target generator, e.g. <code>wind_2040</code></td>
+          <td class="mono">True</td>
+          <td class="mono">True with p_nom_min, or False with fixed p_nom</td>
+        </tr>
+        <tr>
+          <td>Target generator lower bound</td>
+          <td class="mono">0 MW</td>
+          <td class="mono">free optimum + forced addition, or an absolute MW target</td>
+        </tr>
+        <tr>
+          <td>All other generators</td>
+          <td colspan="2" class="mono" style="text-align:center;">identical — extendable as in the base setup</td>
+        </tr>
+        <tr>
+          <td>Demand, fuel, costs, snapshots, period weights</td>
+          <td colspan="2" class="mono" style="text-align:center;">identical</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>For Pathway Pilot, prefer keeping the target generator extendable and setting <code>p_nom_min</code>. That keeps the forced asset in the same optimization family as the free run and lets the rest of the system adapt. Pinning with <code>p_nom_min = p_nom_max</code> is useful when testing an exact capacity target. Setting <code>p_nom_extendable = False</code> is also possible, but then the forced capacity is no longer part of extendable-capacity accounting.</p>
+  </section>
+
+  <!-- ============================================================== -->
+  <section id="sec-4">
+    <h2><span class="section-num">§4</span> Headline metric ΔSEW</h2>
+    <p class="section-lead">The one number that summarises the policy cost.</p>
+
+    <div class="eqn">
+      <span class="lhs">ΔSEW</span> = −(<code>n_forced.objective</code> − <code>n_free.objective</code>) &nbsp;≤&nbsp; 0
+      <span class="note">In weighted EUR over all modelled investment periods. Divide by total forced MW, or by forced MW times represented years, depending on the reporting convention.</span>
+    </div>
+
+    <p>The current solver call uses <code>multi_investment_periods=True</code> and <code>include_objective_constant=False</code>. The objective is therefore the sum of weighted capacity and dispatch costs for the modelled periods, not a single literal calendar year. Convert to MEUR over the horizon for direct objective reporting, or divide by <code>sum(period_weights)</code> when a representative annual average is needed.</p>
+
+    <div class="callout">
+      <div class="callout-label">Sanity check</div>
+      ΔSEW must be ≤ 0 to within solver tolerance when the forced lower bound is binding. A positive value indicates different inputs between runs, a modelling mistake in how the forced run was constructed, or numerical/degeneracy effects. If the free optimum already builds at least the forced level, ΔSEW should be zero.
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <section id="sec-5">
+    <h2><span class="section-num">§5</span> Decomposition</h2>
+    <p class="section-lead">Breaking ΔSEW into components available from the current output schema.</p>
+
+    <p>The headline number is correct but uninformative. Report it alongside a cost and physical decomposition by generator and carrier. The current output layer writes <code>optimal_capacities.parquet</code>, <code>hourly_dispatch.parquet</code>, and <code>hourly_prices.parquet</code>; any SEW report should either add a scenario-difference writer or compute the comparison directly from solved networks before writing results.</p>
+
+    <table>
+      <thead>
+        <tr><th>Component</th><th>Definition</th><th>Sign typically</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>ΔCAPEX</td>
+          <td>Σ over generators of <code>p_nom_opt × capital_cost</code>, differenced run-to-run</td>
+          <td>+ (forcing adds capex, partly offset by crowding-out)</td>
+        </tr>
+        <tr>
+          <td>ΔOPEX</td>
+          <td>Σ over snapshots of <code>p × marginal_cost × weighting</code>, differenced</td>
+          <td>usually negative when wind/solar displace gas</td>
+        </tr>
+        <tr>
+          <td>Δload shedding penalty</td>
+          <td>Dispatch from <code>load_shedding</code> times its configured variable cost</td>
+          <td>should be zero or tiny in normal runs</td>
+        </tr>
+        <tr>
+          <td>Residual</td>
+          <td>Difference between objective delta and the explicit decomposition</td>
+          <td>small</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>The safest path is to compute the decomposition from solved networks using the same weights PyPSA used in the objective. For output-only reporting, read back the three parquet tables and use <code>capital_cost</code>, <code>p_nom_opt_mw</code>, <code>marginal_cost</code>, <code>dispatch_mw</code>, and <code>price_eur_per_mwh</code>.</p>
+
+    <h3>Physical-quantity companion table</h3>
+    <p>Alongside the cost decomposition, report:</p>
+    <ul>
+      <li>Δ installed capacity by carrier and build year (MW).</li>
+      <li>Δ generation by carrier and investment period (TWh).</li>
+      <li>Δ load shedding (MWh), expected to be zero after normal solves.</li>
+      <li>Δ average wholesale price at the single <code>electricity</code> bus (EUR/MWh), by period and across the weighted horizon.</li>
+      <li>Δ unit overnight CAPEX exposure using <code>unit_capex_eur_per_mw</code> for reporting, not for the PyPSA objective.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================== -->
+  <section id="sec-6">
+    <h2><span class="section-num">§6</span> Reference implementation</h2>
+    <p class="section-lead">Minimum viable code shaped around <code>build_network</code> and <code>solve_model</code>.</p>
+
+    <pre><code><span class="kw">from</span> pathlib <span class="kw">import</span> Path
+
+<span class="kw">import</span> pandas <span class="kw">as</span> pd
+
+<span class="kw">from</span> pathway_pilot.build_network <span class="kw">import</span> build_network
+<span class="kw">from</span> pathway_pilot.config <span class="kw">import</span> DEV_DATA_DIR
+<span class="kw">from</span> pathway_pilot.model_config <span class="kw">import</span> load_config, with_active_model
+<span class="kw">from</span> pathway_pilot.model_inputs <span class="kw">import</span> build_model_inputs
+
+
+<span class="kw">def</span> <span class="fn">solve_network</span>(network):
+    status, condition = network.optimize(
+        multi_investment_periods=<span class="kw">True</span>,
+        solver_name=<span class="str">"highs"</span>,
+        include_objective_constant=<span class="kw">False</span>,
+    )
+    <span class="kw">if</span> (status, condition) != (<span class="str">"ok"</span>, <span class="str">"optimal"</span>):
+        <span class="kw">raise</span> RuntimeError(<span class="str">f"solve failed: {status=} {condition=}"</span>)
+    <span class="kw">return</span> network
+
+
+cfg = with_active_model(load_config(Path(<span class="str">"config/model_config.yaml"</span>)), <span class="str">"NL"</span>)
+tvar_dir = DEV_DATA_DIR / <span class="str">"pathway-pilot"</span> / <span class="str">"tvar"</span>
+capacity_factors = pd.read_parquet(tvar_dir / <span class="str">"pecd_capacity_factors_2030_2040.parquet"</span>)
+demand = pd.read_parquet(tvar_dir / <span class="str">"tyndp_demand_profiles_2030_2040.parquet"</span>)
+data = build_model_inputs(
+    capacity_factors=capacity_factors,
+    demand=demand,
+    periods=cfg.investment_periods,
+    weather_year=cfg.climate_years[<span class="num">0</span>],
+    demand_zones=cfg.demand_zones,
+    capacity_factor_zone=cfg.capacity_factor_zone,
+)
+
+n_free = solve_network(build_network(cfg, data))
+
+target = <span class="str">"wind_2040"</span>
+forced_addition_mw = <span class="num">1000.0</span>
+forced_level_mw = float(n_free.generators.loc[target, <span class="str">"p_nom_opt"</span>]) + forced_addition_mw
+
+n_forced = build_network(cfg, data)
+n_forced.generators.loc[target, <span class="str">"p_nom_min"</span>] = forced_level_mw
+n_forced = solve_network(n_forced)
+
+delta_objective = n_forced.objective - n_free.objective
+delta_sew = -delta_objective
+
+<span class="kw">def</span> <span class="fn">capex</span>(n):
+    g = n.generators
+    <span class="kw">return</span> (g.p_nom_opt * g.capital_cost).sum()
+
+<span class="kw">def</span> <span class="fn">opex</span>(n):
+    w = n.snapshot_weightings.objective
+    dispatch_cost = n.generators_t.p.multiply(n.generators.marginal_cost, axis=<span class="num">1</span>)
+    <span class="kw">return</span> dispatch_cost.multiply(w, axis=<span class="num">0</span>).sum().sum()
+
+d_capex = capex(n_forced) - capex(n_free)
+d_opex = opex(n_forced) - opex(n_free)
+residual = delta_objective - (d_capex + d_opex)
+
+<span class="fn">print</span>(<span class="str">f"Delta SEW: {delta_sew / 1e6:,.2f} MEUR weighted horizon"</span>)
+<span class="fn">print</span>(<span class="str">f"Delta CAPEX: {d_capex / 1e6:,.2f} MEUR"</span>)
+<span class="fn">print</span>(<span class="str">f"Delta OPEX: {d_opex / 1e6:,.2f} MEUR"</span>)
+<span class="fn">print</span>(<span class="str">f"Residual: {residual / 1e6:,.4f} MEUR"</span>)
+</code></pre>
+
+    <div class="callout">
+      <div class="callout-label">Note</div>
+      This is deliberately kept close to the repository entry points. A production script should also write metadata matching <code>scripts/run_pypsa_model.py</code>: active model, demand zones, capacity-factor zone, weather year, and run timestamp.
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <section id="sec-7">
+    <h2><span class="section-num">§7</span> Emissions treatment</h2>
+    <p class="section-lead">What is and is not represented in the current objective.</p>
+
+    <p>The current codebase does not add CO<sub>2</sub> emissions factors, CO<sub>2</sub> prices, or a global emissions cap to the PyPSA network. Gas marginal costs include configured fuel prices plus variable O&amp;M only. Therefore the objective-based ΔSEW is a private system-cost metric, not a full climate-damage-inclusive welfare metric.</p>
+
+    <p>If emissions accounting is added later, keep the correction explicit:</p>
+    <div class="eqn">
+      <span class="lhs">ΔSEW<sub>adj</sub></span> = ΔSEW<sub>obj</sub> + (SCC − p<sub>CO2</sub>) × (−ΔEmissions)
+      <span class="note">If forcing reduces emissions, the second term is positive. SCC is the adopted social cost of carbon.</span>
+    </div>
+
+    <p>Until that implementation exists, do not report ΔCO<sub>2</sub> or external CO<sub>2</sub> welfare terms as model outputs. At most, report them as an out-of-model sensitivity with clearly documented gas emissions factors and units.</p>
+  </section>
+
+  <!-- ============================================================== -->
+  <section id="sec-8">
+    <h2><span class="section-num">§8</span> Model scope limits</h2>
+    <p class="section-lead">How DK/NL cases map to the actual network.</p>
+
+    <p><code>active_model</code> currently chooses which demand zones and capacity-factor zone are aggregated into the one-bus model. <code>DK</code> uses <code>DKE1</code> and <code>DKW1</code> demand with <code>DKW1</code> capacity factors. <code>NL</code> uses <code>NL00</code> demand and <code>NL00</code> capacity factors. Both cases solve as one bus named <code>electricity</code>.</p>
+
+    <ul>
+      <li>There are no cross-border flows, congestion rents, or zonal price differences to decompose.</li>
+      <li>The raw objective delta is the welfare-cost proxy for the selected aggregated model case, not a national market-welfare decomposition.</li>
+      <li>The hourly price output has one bus, so reporting should say "average electricity-bus price" rather than "DK1 / DK2 price" unless the network is extended.</li>
+    </ul>
+
+    <div class="callout warn">
+      <div class="callout-label">Future extension</div>
+      If buses, links, imports, and exports are added later, this section should be replaced with a zonal consumer-surplus, producer-surplus, and congestion-rent decomposition. That logic is not supported by the present network builder.
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <section id="sec-9">
+    <h2><span class="section-num">§9</span> Multiple optima &amp; robustness</h2>
+    <p class="section-lead">Degeneracies and the dispatch-vs-capacity decomposition.</p>
+
+    <p>If the unrestricted run is degenerate, the forced run's dispatch can shift in ways that are not economically meaningful but inflate apparent component changes. In this model, degeneracy is most likely among same-carrier build years with similar costs or across zero/low marginal-cost VRE assets.</p>
+
+    <ol>
+      <li><strong>Tighten solver tolerances.</strong> For HiGHS, test <code>primal_feasibility_tolerance = 1e-7</code> and <code>dual_feasibility_tolerance = 1e-7</code>, then confirm ΔSEW is stable.</li>
+      <li><strong>Run tiny smoke cases first.</strong> Use synthetic inputs with few hours per period for tests, matching the repository convention for PyPSA solve tests.</li>
+      <li><strong>Separate short-run and long-run effects.</strong> A short-run stage fixes all non-target capacities at the free optimum; the long-run stage lets all other extendable generators re-optimise. The latter is the main Pathway Pilot result.</li>
+    </ol>
+  </section>
+
+  <!-- ============================================================== -->
+  <section id="sec-10">
+    <h2><span class="section-num">§10</span> Reporting template</h2>
+    <p class="section-lead">A minimum table for results sections and policy memos.</p>
+
+    <table>
+      <thead>
+        <tr><th>Indicator</th><th>Unit</th><th>Value</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Model case</td><td>DK or NL</td><td class="mono">-</td></tr>
+        <tr><td>Weather year</td><td>year</td><td class="mono">-</td></tr>
+        <tr><td>Forced generator</td><td>name</td><td class="mono">wind_2040</td></tr>
+        <tr><td>Forced capacity increment</td><td>MW</td><td class="mono">-</td></tr>
+        <tr><td>ΔSEW headline</td><td>MEUR weighted horizon</td><td class="mono">-</td></tr>
+        <tr><td>ΔSEW annual average</td><td>MEUR/represented year</td><td class="mono">-</td></tr>
+        <tr><td>ΔCAPEX</td><td>MEUR weighted horizon</td><td class="mono">-</td></tr>
+        <tr><td>ΔOPEX</td><td>MEUR weighted horizon</td><td class="mono">-</td></tr>
+        <tr><td>Δload shedding</td><td>MWh</td><td class="mono">-</td></tr>
+        <tr><td>Δ installed capacity by carrier/build year</td><td>MW</td><td class="mono">-</td></tr>
+        <tr><td>Δ generation by carrier/period</td><td>TWh</td><td class="mono">-</td></tr>
+        <tr><td>Δ average electricity-bus price</td><td>EUR/MWh</td><td class="mono">-</td></tr>
+        <tr><td>Residual versus objective delta</td><td>MEUR</td><td class="mono">-</td></tr>
+      </tbody>
+    </table>
+
+    <p>Accompany the table with the active config values that affect comparability: <code>investment_periods</code>, <code>period_weights</code>, <code>climate_years</code>, <code>demand_zones</code>, <code>capacity_factor_zone</code>, gas-price convention, and whether TechCat-derived or fallback technology assumptions were used.</p>
+  </section>
+
+  <footer class="colophon">
+    <span>SEW-FORCED-01 · Rev. 2026-05-12</span>
+    <span>Pathway Pilot · PyPSA · HiGHS</span>
+  </footer>
+
+</div>
+</body>
+</html>

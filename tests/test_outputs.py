@@ -6,6 +6,7 @@ from pathway_pilot.model_config import load_config
 from pathway_pilot.model_inputs import make_synthetic_inputs
 from pathway_pilot.outputs import (
     hourly_dispatch,
+    hourly_interconnector_flows,
     hourly_prices,
     optimal_capacities,
     write_model_outputs,
@@ -23,6 +24,7 @@ def test_output_tables_have_expected_columns():
     assert set(
         [
             "generator",
+            "bus",
             "carrier",
             "build_year",
             "p_nom_opt_mw",
@@ -32,6 +34,9 @@ def test_output_tables_have_expected_columns():
     ).issubset(optimal_capacities(network).columns)
     assert set(["period", "timestep", "generator", "dispatch_mw"]).issubset(
         hourly_dispatch(network).columns
+    )
+    assert set(["period", "timestep", "link", "flow_bus0_to_bus1_mw"]).issubset(
+        hourly_interconnector_flows(network).columns
     )
     assert set(["period", "timestep", "bus", "price_eur_per_mwh"]).issubset(
         hourly_prices(network).columns
@@ -54,5 +59,6 @@ def test_write_model_outputs_creates_three_parquet_files(monkeypatch):
     assert [name for name, _, _ in written] == [
         "optimal_capacities.parquet",
         "hourly_dispatch.parquet",
+        "hourly_interconnector_flows.parquet",
         "hourly_prices.parquet",
     ]
