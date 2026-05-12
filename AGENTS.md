@@ -37,11 +37,11 @@
 - Default `DEV_DATA_DIR` is `C:\Users\B510067\dev_data`; override with `PATHWAY_PILOT_DEV_DATA_DIR`.
 - Do not commit proprietary/raw input data, solver outputs, dashboards, or local logs.
 - Treat gas prices configured in DKK/GJ as fuel prices and convert using `EURDKK = 7.47`.
-- Use DKW1 capacity factors and DKE1 + DKW1 demand; reuse 2040 time series for 2050 only for demand and capacity factors.
+- Select DK/NL with `active_model` in `config/model_config.yaml`; DK uses DKW1 CFs, NL uses NL00 CFs; reuse 2040 time series for 2050 only for demand and capacity factors.
 
 ## Definition of done
 - Relevant tests pass.
-- Large model runs are optimal when model outputs are changed.
+- Large model runs are optimal when model outputs are changed; use `scripts\run_pypsa_scenarios.py` for DK/NL scenario output folders.
 - Dashboard is regenerated when output schema or reporting logic changes.
 - Spec/docs are updated when behavior or assumptions change.
 - New outputs are read back or spot-checked for units and expected values.

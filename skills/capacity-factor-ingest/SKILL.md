@@ -37,7 +37,8 @@ source_file
 
 ## Pathway-Pilot Rules
 
-- Current model input uses DKW1 capacity factors for both wind and solar.
+- Current model input uses the configured `model_cases[active_model].capacity_factor_zone`.
+- Current `DK` uses `DKW1`; current `NL` uses `NL00`.
 - Current prepared PECD data covers target years 2030 and 2040.
 - For model period 2050, reuse the 2040 capacity-factor time series only at the model-input adapter layer.
 - Do not bake the 2050 reuse rule into raw capacity-factor ingestion files.

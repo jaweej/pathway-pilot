@@ -1,5 +1,16 @@
 investment_periods: [2030, 2040, 2050]
 
+active_model: NL
+climate_years: [1995, 2008, 2009]
+
+model_cases:
+  DK:
+    demand_zones: [DKE1, DKW1]
+    capacity_factor_zone: DKW1
+  NL:
+    demand_zones: [NL00]
+    capacity_factor_zone: NL00
+
 period_weights:
   2030: 10
   2040: 10

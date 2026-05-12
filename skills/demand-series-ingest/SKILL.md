@@ -36,9 +36,9 @@ source_file
 
 ## Pathway-Pilot Rules
 
-- Current source zones are `DKE1` and `DKW1`.
+- Current source zones are `DKE1`, `DKW1`, and `NL00`.
 - Current source target years are `2030` and `2040`.
-- Current model-facing demand is the hourly sum of `DKE1` and `DKW1`.
+- Current model-facing demand uses `model_cases[active_model].demand_zones` in `config/model_config.yaml`; `DK` is `DKE1 + DKW1`, and `NL` is `NL00`.
 - For model period `2050`, reuse the `2040` demand time series only at the model-input adapter layer.
 - Do not bake the 2050 reuse rule into raw demand ingestion files.
 

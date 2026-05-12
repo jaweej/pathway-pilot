@@ -30,6 +30,7 @@ Current zones:
 ```text
 DKE1
 DKW1
+NL00
 ```
 
 Expected input columns after `header=7`:
@@ -42,4 +43,4 @@ Hour
 <weather-year columns>
 ```
 
-The pathway-pilot model sums DKE1 and DKW1 demand in `model_inputs.py`. Keep source-zone rows separate in the prepared demand table.
+The pathway-pilot model sums the configured demand zones from `model_cases[active_model]` in `config/model_config.yaml`. DK uses DKE1 and DKW1; NL uses NL00. Keep source-zone rows separate in the prepared demand table.

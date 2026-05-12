@@ -7,6 +7,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+DEFAULT_DEMAND_ZONES = ("DKE1", "DKW1")
+DEFAULT_CAPACITY_FACTOR_ZONE = "DKW1"
+
 
 @dataclass(frozen=True)
 class ModelInputs:
@@ -73,12 +76,16 @@ def build_model_inputs(
     demand: pd.DataFrame,
     periods: list[int],
     weather_year: int,
+    demand_zones: tuple[str, ...] = DEFAULT_DEMAND_ZONES,
+    capacity_factor_zone: str = DEFAULT_CAPACITY_FACTOR_ZONE,
 ) -> ModelInputs:
     cf = capacity_factors[capacity_factors["weather_year"] == weather_year].copy()
-    cf = cf[cf["zone"] == "DKW1"]
+    cf = cf[cf["zone"] == capacity_factor_zone]
     cf = _with_model_period(cf, periods)
 
-    demand_year = demand[demand["weather_year"] == weather_year].copy()
+    demand_year = demand[
+        (demand["weather_year"] == weather_year) & demand["zone"].isin(demand_zones)
+    ].copy()
     demand_year = _with_model_period(demand_year, periods)
     demand_agg = (
         demand_year.groupby(["period", "timestamp"], as_index=False)["demand_mw"].sum()

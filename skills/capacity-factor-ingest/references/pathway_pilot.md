@@ -30,6 +30,7 @@ Current zones:
 ```text
 DKE1
 DKW1
+NL00
 ```
 
 Current technology prefixes:
@@ -39,4 +40,4 @@ onshore_wind -> PECD_Wind_Onshore
 solar        -> PECD_LFSolarPV
 ```
 
-The pathway-pilot model currently selects DKW1 capacity factors from the prepared long-form table. Keep DKE1 rows in the prepared source table if they are part of the source extraction; filtering belongs in `model_inputs.py`.
+The pathway-pilot model selects the configured `capacity_factor_zone` from the prepared long-form table. DK currently uses DKW1; NL currently uses NL00. Keep all source-zone rows in the prepared table; filtering belongs in `model_inputs.py`.

@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 TARGET_YEARS = (2030, 2040)
-ZONES = ("DKE1", "DKW1")
+ZONES = ("DKE1", "DKW1", "NL00")
 
 
 def reshape_demand_profile(

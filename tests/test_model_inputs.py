@@ -17,7 +17,7 @@ def test_real_data_adapter_uses_dkw1_cfs_summed_demand_and_2040_for_2050():
     cf_rows = []
     demand_rows = []
     for target_year, timestamps in [(2030, timestamps_2030), (2040, timestamps_2040)]:
-        for zone in ["DKE1", "DKW1"]:
+        for zone in ["DKE1", "DKW1", "NL00"]:
             for technology in ["onshore_wind", "solar"]:
                 for i, timestamp in enumerate(timestamps):
                     cf_rows.append(
@@ -38,7 +38,7 @@ def test_real_data_adapter_uses_dkw1_cfs_summed_demand_and_2040_for_2050():
                         "weather_year": 1982,
                         "zone": zone,
                         "timestamp": timestamp,
-                        "demand_mw": 10 if zone == "DKE1" else 20 + i,
+                        "demand_mw": {"DKE1": 10, "DKW1": 20 + i, "NL00": 1000}[zone],
                         "source_file": "demand.xlsx",
                     }
                 )
@@ -55,3 +55,48 @@ def test_real_data_adapter_uses_dkw1_cfs_summed_demand_and_2040_for_2050():
     assert data.demand_series.loc[(2030, timestamps_2030[1])] == 31
     assert data.wind_cf_series.loc[(2050, timestamps_2040[0])] == 0.2
     assert data.demand_series.loc[(2050, timestamps_2040[1])] == 31
+
+
+def test_real_data_adapter_can_switch_to_nl_demand():
+    timestamps = pd.date_range("1982-01-01", periods=2, freq="h")
+    cf_rows = []
+    demand_rows = []
+    for zone in ["DKE1", "DKW1", "NL00"]:
+        for technology in ["onshore_wind", "solar"]:
+            for i, timestamp in enumerate(timestamps):
+                cf_rows.append(
+                    {
+                        "target_year": 2030,
+                        "weather_year": 1982,
+                        "zone": zone,
+                        "technology": technology,
+                        "timestamp": timestamp,
+                        "capacity_factor": {"DKE1": 0.1, "DKW1": 0.2, "NL00": 0.4}[zone]
+                        + i / 10,
+                        "source_file": "cf.csv",
+                    }
+                )
+    for zone, value in [("DKE1", 10), ("DKW1", 20), ("NL00", 100)]:
+        for timestamp in timestamps:
+            demand_rows.append(
+                {
+                    "target_year": 2030,
+                    "weather_year": 1982,
+                    "zone": zone,
+                    "timestamp": timestamp,
+                    "demand_mw": value,
+                    "source_file": "demand.xlsx",
+                }
+            )
+
+    data = build_model_inputs(
+        capacity_factors=pd.DataFrame(cf_rows),
+        demand=pd.DataFrame(demand_rows),
+        periods=[2030],
+        weather_year=1982,
+        demand_zones=("NL00",),
+        capacity_factor_zone="NL00",
+    )
+
+    assert data.demand_series.loc[(2030, timestamps[0])] == 100
+    assert data.wind_cf_series.loc[(2030, timestamps[1])] == 0.5

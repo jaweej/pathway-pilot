@@ -1,6 +1,10 @@
 import pandas as pd
 
-from pathway_pilot.demand import reshape_demand_profile
+from pathway_pilot.demand import ZONES, reshape_demand_profile
+
+
+def test_demand_source_zones_include_nl00():
+    assert ZONES == ("DKE1", "DKW1", "NL00")
 
 
 def test_reshape_demand_profile_matches_long_schema():

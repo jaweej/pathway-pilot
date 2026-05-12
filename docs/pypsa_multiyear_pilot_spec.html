@@ -340,6 +340,17 @@ pytest&gt;=8.0</code></pre>
   <pre><code># config/model_config.yaml
 investment_periods: [2030, 2040, 2050]
 
+active_model: NL
+climate_years: [1995, 2008, 2009]
+
+model_cases:
+  DK:
+    demand_zones: [DKE1, DKW1]
+    capacity_factor_zone: DKW1
+  NL:
+    demand_zones: [NL00]
+    capacity_factor_zone: NL00
+
 # Adjustable: what each modelled year represents in the objective.
 period_weights:
   2030: 10
@@ -488,16 +499,18 @@ DEV_DATA_DIR\pathway-pilot\tech\utility_scale_pv.parquet</code></pre>
   <p>
     Demand should be prepared from National Trends Excel workbooks under
     <code>DEV_DATA_DIR\TYNDP24\Demand\Demand Profiles\NT\Electricity demand profiles</code>
-    for <code>2030</code> and <code>2040</code>, using sheets <code>DKE1</code> and
-    <code>DKW1</code>. The model-facing demand for the one-zone pilot is the hourly sum
-    of <code>DKE1</code> and <code>DKW1</code>. For model period <code>2050</code>, reuse
+    for <code>2030</code> and <code>2040</code>, using sheets <code>DKE1</code>,
+    <code>DKW1</code> and <code>NL00</code>. The model-facing demand for the one-zone pilot is the hourly sum
+    of the configured <code>model_cases[active_model].demand_zones</code>. The <code>DK</code>
+    case uses <code>DKE1 + DKW1</code>; the <code>NL</code> case uses <code>NL00</code>.
+    For model period <code>2050</code>, reuse
     the <code>2040</code> demand profile.
   </p>
   <table>
     <tr><th>column</th><th>example</th><th>meaning</th></tr>
     <tr><td>target_year</td><td>2040</td><td>Demand scenario year; 2050 model demand reuses 2040 data.</td></tr>
     <tr><td>weather_year</td><td>1982</td><td>Weather year represented by the source column.</td></tr>
-    <tr><td>zone</td><td>DKE1</td><td>Source demand zone before aggregation.</td></tr>
+    <tr><td>zone</td><td>DKE1</td><td>Source demand zone before aggregation; current prepared zones are <code>DKE1</code>, <code>DKW1</code> and <code>NL00</code>.</td></tr>
     <tr><td>timestamp</td><td>1982-01-01 00:00</td><td>Hourly timestamp built from weather year, date and hour.</td></tr>
     <tr><td>demand_mw</td><td>5106.2</td><td>Hourly demand for the source zone.</td></tr>
     <tr><td>source_file</td><td>2040_National Trends.xlsx</td><td>Traceability back to source workbook.</td></tr>
@@ -506,7 +519,8 @@ DEV_DATA_DIR\pathway-pilot\tech\utility_scale_pv.parquet</code></pre>
   <p>
     <code>scripts/build_tyndp_demand_profiles.py</code> writes
     <code>DEV_DATA_DIR\pathway-pilot\tvar\tyndp_demand_profiles_2030_2040.parquet</code>.
-    The first generated file contained <code>1,331,520</code> long-form rows.
+    With <code>DKE1</code>, <code>DKW1</code> and <code>NL00</code>, the generated file
+    contains <code>1,997,280</code> long-form rows.
   </p>
 
   <p>
@@ -518,9 +532,9 @@ DEV_DATA_DIR\pathway-pilot\tech\utility_scale_pv.parquet</code></pre>
   <h3>Model-facing data rules</h3>
   <table>
     <tr><th>Input</th><th>Rule</th></tr>
-    <tr><td>Wind capacity factor</td><td>Use <code>technology = onshore_wind</code> and <code>zone = DKW1</code> from the PECD Parquet file.</td></tr>
-    <tr><td>Solar capacity factor</td><td>Use <code>technology = solar</code> and <code>zone = DKW1</code> from the PECD Parquet file.</td></tr>
-    <tr><td>Demand</td><td>Sum <code>DKE1</code> and <code>DKW1</code> hourly demand by <code>target_year</code>, <code>weather_year</code> and <code>timestamp</code>.</td></tr>
+    <tr><td>Wind capacity factor</td><td>Use <code>technology = onshore_wind</code> and configured <code>capacity_factor_zone</code> from the PECD Parquet file. Current <code>DK</code> uses <code>DKW1</code>; current <code>NL</code> uses <code>NL00</code>.</td></tr>
+    <tr><td>Solar capacity factor</td><td>Use <code>technology = solar</code> and configured <code>capacity_factor_zone</code> from the PECD Parquet file. Current <code>DK</code> uses <code>DKW1</code>; current <code>NL</code> uses <code>NL00</code>.</td></tr>
+    <tr><td>Demand</td><td>Sum configured <code>demand_zones</code> hourly demand by <code>target_year</code>, <code>weather_year</code> and <code>timestamp</code>.</td></tr>
     <tr><td>2050 time series</td><td>Use the same demand and capacity-factor time series as <code>2040</code>, relabelled to model period <code>2050</code>.</td></tr>
     <tr><td>Technology costs</td><td>Read wind, solar, simple-cycle gas and combined-cycle gas costs from the prepared TechCat Parquet files in <code>DEV_DATA_DIR\pathway-pilot\tech</code>.</td></tr>
     <tr><td>Gas marginal cost</td><td>Convert configured DKK/GJ gas prices to EUR/MWh fuel using <code>EUR/MWh = DKK/GJ × 3.6 / 7.47</code>, then combine with gas-turbine efficiency and variable O&amp;M from the gas TechCat Parquet file.</td></tr>
@@ -716,8 +730,12 @@ gas_turbine_cc_2030, gas_turbine_cc_2040, gas_turbine_cc_2050</code></pre>
 
   <p>
     Solved model outputs are written by <code>scripts/run_pypsa_model.py</code> to
-    <code>DEV_DATA_DIR\pathway-pilot\output</code>, which defaults to
-    <code>C:\Users\B510067\dev_data\pathway-pilot\output</code>.
+    model-case subfolders under <code>DEV_DATA_DIR\pathway-pilot\output</code>, which defaults to
+    <code>C:\Users\B510067\dev_data\pathway-pilot\output</code>. Use
+    <code>scripts/run_pypsa_scenarios.py</code> to loop over configured model cases and
+    <code>climate_years</code>. With multiple configured climate years, outputs are written
+    under folders such as <code>output\DK\weather_1995</code> and
+    <code>output\NL\weather_2008</code>.
   </p>
 
   <table>
@@ -725,6 +743,7 @@ gas_turbine_cc_2030, gas_turbine_cc_2040, gas_turbine_cc_2050</code></pre>
     <tr><td><code>optimal_capacities.parquet</code></td><td>One row per generator with carrier, build year, lifetime, optimal capacity, capital cost and marginal cost.</td></tr>
     <tr><td><code>hourly_dispatch.parquet</code></td><td>Long-form hourly generator dispatch by period, timestamp and generator.</td></tr>
     <tr><td><code>hourly_prices.parquet</code></td><td>Long-form hourly bus marginal prices by period and timestamp.</td></tr>
+    <tr><td><code>model_metadata.json</code></td><td>Model case, demand zones, capacity-factor zone, weather year and run timestamp.</td></tr>
   </table>
 
   <table>
