@@ -37,6 +37,17 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
     capacities = pd.read_parquet(output_dir / "optimal_capacities.parquet")
     dispatch = pd.read_parquet(output_dir / "hourly_dispatch.parquet")
     prices = pd.read_parquet(output_dir / "hourly_prices.parquet")
+    metadata_path = output_dir / "model_metadata.json"
+    metadata = (
+        json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata_path.exists()
+        else {
+            "active_model": "DK",
+            "demand_zones": ["DKE1", "DKW1"],
+            "capacity_factor_zone": "DKW1",
+            "weather_year": 1982,
+        }
+    )
 
     dispatch_by_carrier = (
         dispatch.groupby(["period", "timestep", "carrier"], as_index=False)["dispatch_mw"].sum()
@@ -152,11 +163,12 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
         shed = group["load_shedding"].clip(lower=0)
         shed_hours = int((shed > 1e-6).sum())
         shed_energy_mwh = float(shed.sum())
+        demand_energy_mwh = float(group["demand"].sum())
         summary.append(
             {
                 "period": int(period),
                 "peak_demand_mw": _round(group["demand"].max()),
-                "energy_twh": _round(group["demand"].sum() / 1_000_000),
+                "energy_twh": _round(demand_energy_mwh / 1_000_000),
                 "average_price": _round(group["price_eur_per_mwh"].mean(), 2),
                 "load_shedding_mwh": _round(shed_energy_mwh, 4),
             }
@@ -167,7 +179,12 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
                 "lole_hours": shed_hours,
                 "eens_mwh": _round(shed_energy_mwh, 4),
                 "eens_gwh": _round(shed_energy_mwh / 1_000, 6),
+                "eens_pct_demand": _round(
+                    100 * shed_energy_mwh / demand_energy_mwh if demand_energy_mwh else 0,
+                    6,
+                ),
                 "peak_shed_mw": _round(shed.max(), 4),
+                "gas_generation_twh": _round(group[GAS_CARRIERS].sum(axis=1).sum() / 1_000_000, 3),
                 "voll_eur_per_mwh": _round(
                     capacities.loc[
                         capacities["generator"] == "load_shedding", "marginal_cost"
@@ -179,6 +196,13 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
 
     return {
         "summary": summary,
+        "averagePrices": [
+            {
+                "period": row["period"],
+                "average_price_eur_per_mwh": row["average_price"],
+            }
+            for row in summary
+        ],
         "buildCapacity": _series_points(build_capacity, ["build_year", "carrier", "p_nom_opt_mw"]),
         "buildCapex": _series_points(build_capex, ["build_year", "carrier", "capex_meur_per_mw"]),
         "activeCapacity": active_rows,
@@ -192,6 +216,54 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
         "weekData": week_data,
         "dateMin": min(row["timestep"][:10] for rows in week_data.values() for row in rows),
         "dateMax": max(row["timestep"][:10] for rows in week_data.values() for row in rows),
+        "metadata": metadata,
+    }
+
+
+def has_output_tables(path: Path) -> bool:
+    return all(
+        (path / file_name).exists()
+        for file_name in [
+            "optimal_capacities.parquet",
+            "hourly_dispatch.parquet",
+            "hourly_prices.parquet",
+        ]
+    )
+
+
+def load_dashboard_bundle(output_dir: Path = OUTPUT_DIR) -> dict:
+    datasets = {}
+
+    def add_dataset(scenario_dir: Path) -> None:
+        data = load_dashboard_data(scenario_dir)
+        country = str(data["metadata"].get("active_model") or scenario_dir.name)
+        climate_year = str(data["metadata"].get("weather_year") or scenario_dir.name)
+        datasets.setdefault(country, {})[climate_year] = data
+
+    for country_dir in sorted(path for path in output_dir.iterdir() if path.is_dir()):
+        weather_dirs = [
+            path
+            for path in sorted(country_dir.iterdir())
+            if path.is_dir() and has_output_tables(path)
+        ]
+        if weather_dirs:
+            for weather_dir in weather_dirs:
+                add_dataset(weather_dir)
+        elif has_output_tables(country_dir):
+            add_dataset(country_dir)
+
+    if not datasets and has_output_tables(output_dir):
+        add_dataset(output_dir)
+
+    if not datasets:
+        raise FileNotFoundError(f"No model output tables found under {output_dir}")
+
+    preferred = "NL" if "NL" in datasets else sorted(datasets)[0]
+    preferred_climate = sorted(datasets[preferred], key=int)[0]
+    return {
+        "datasets": datasets,
+        "defaultCountry": preferred,
+        "defaultClimateYear": preferred_climate,
     }
 
 
@@ -295,13 +367,26 @@ HTML_TEMPLATE = r"""<!doctype html>
       color: var(--muted);
       font-size: 13px;
     }
-    input, select {
+    input, select, button {
       border: 1px solid var(--line);
       background: white;
       border-radius: 6px;
       color: var(--ink);
       padding: 7px 9px;
       font: inherit;
+    }
+    button {
+      cursor: pointer;
+      color: var(--ink);
+    }
+    button:hover {
+      border-color: #9fb0bf;
+      background: #f8fafb;
+    }
+    button.active {
+      border-color: #17202a;
+      background: #17202a;
+      color: white;
     }
     svg {
       display: block;
@@ -357,9 +442,15 @@ HTML_TEMPLATE = r"""<!doctype html>
 <body>
 <header>
   <h1>Pathway Pilot - PyPSA Outputs</h1>
-  <p>One-zone capacity expansion and dispatch results. Capacity factors use DKW1; demand is DKE1 + DKW1. The 2050 time series reuses 2040 profiles.</p>
+  <p id="modelSummary">One-zone capacity expansion and dispatch results. The 2050 time series reuses 2040 profiles.</p>
 </header>
 <main>
+  <div class="controls">
+    <label for="countrySelect">Country</label>
+    <select id="countrySelect"></select>
+    <label for="climateYearSelect">Climate year</label>
+    <select id="climateYearSelect"></select>
+  </div>
   <section class="grid">
     <div class="panel">
       <h2>Active Capacity By Model Year</h2>
@@ -372,13 +463,16 @@ HTML_TEMPLATE = r"""<!doctype html>
       <div class="legend" id="buildCapacityLegend"></div>
     </div>
     <div class="panel">
-      <h2>Capture Rates</h2>
-      <svg id="captureChart"></svg>
-      <div class="legend" id="captureLegend"></div>
+      <h2>Average Prices</h2>
+      <svg id="averagePriceChart"></svg>
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--demand)"></span>Average electricity price</span>
+      </div>
     </div>
     <div class="panel">
-      <h2>Security Of Supply</h2>
-      <div id="securityTable"></div>
+      <h2>Duration Curve</h2>
+      <svg id="durationChart"></svg>
+      <div class="legend" id="durationLegend"></div>
     </div>
     <div class="panel wide">
       <h2>Dispatch Week</h2>
@@ -387,6 +481,9 @@ HTML_TEMPLATE = r"""<!doctype html>
         <select id="weekPeriod"></select>
         <label for="weekStart">Week start</label>
         <input id="weekStart" type="date">
+        <button id="winterWeek" type="button">Winter week</button>
+        <button id="summerWeek" type="button">Summer week</button>
+        <button id="shedWeek" type="button">Highest shedding</button>
       </div>
       <svg id="weekChart"></svg>
       <div class="legend">
@@ -399,17 +496,15 @@ HTML_TEMPLATE = r"""<!doctype html>
       </div>
     </div>
     <div class="panel wide">
-      <h2>Duration Curve</h2>
-      <div class="controls">
-        <label for="durationPeriod">Model year</label>
-        <select id="durationPeriod"></select>
-      </div>
-      <svg id="durationChart"></svg>
-      <div class="legend">
-        <span><span class="swatch" style="background:var(--demand)"></span>Electricity price</span>
-      </div>
+      <h2>Security Of Supply</h2>
+      <div id="securityTable"></div>
     </div>
-    <div class="panel wide">
+    <div class="panel">
+      <h2>Capture Rates</h2>
+      <svg id="captureChart"></svg>
+      <div class="legend" id="captureLegend"></div>
+    </div>
+    <div class="panel">
       <h2>Unit CAPEX By Investment Year</h2>
       <svg id="capexChart"></svg>
       <div class="legend" id="capexLegend"></div>
@@ -418,8 +513,12 @@ HTML_TEMPLATE = r"""<!doctype html>
 </main>
 <div class="tooltip" id="tooltip"></div>
 <script>
-const DATA = __DATA__;
+const APP_DATA = __DATA__;
+const DATASETS = APP_DATA.datasets || {};
+let DATA;
+let activeWeekPreset = "shed";
 const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", gas_turbine_cc: "#00a6a6", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058" };
+const YEAR_COLORS = ["#111827", "#2f80ed", "#18a058", "#c43d3d", "#7a5195"];
 const LABELS = { wind: "Wind", solar: "Solar", gas: "Gas turbine", gas_turbine_cc: "Gas turbine CC", load_shedding: "Load shedding", demand: "Demand" };
 const tooltip = document.getElementById("tooltip");
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
@@ -427,6 +526,52 @@ const fmt0 = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 const fmt1 = new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const fmt2 = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function labelFor(key) { return LABELS[key] || key.replaceAll("_", " "); }
+function renderModelSummary() {
+  const meta = DATA.metadata || {};
+  const demand = (meta.demand_zones || ["DKE1", "DKW1"]).join(" + ");
+  const cfZone = meta.capacity_factor_zone || "DKW1";
+  const model = meta.active_model || "DK";
+  document.getElementById("modelSummary").textContent =
+    `One-zone ${model} capacity expansion and dispatch results. Capacity factors use ${cfZone}; demand is ${demand}. The 2050 time series reuses 2040 profiles.`;
+}
+
+function initCountryControl() {
+  const select = document.getElementById("countrySelect");
+  const countries = Object.keys(DATASETS).sort();
+  select.innerHTML = countries.map(country => `<option value="${country}">${country}</option>`).join("");
+  select.value = APP_DATA.defaultCountry && DATASETS[APP_DATA.defaultCountry] ? APP_DATA.defaultCountry : countries[0];
+  refreshClimateControl(APP_DATA.defaultClimateYear);
+  setCurrentDataset();
+  select.addEventListener("change", () => {
+    refreshClimateControl();
+    setCurrentDataset();
+    rerenderForScenario();
+  });
+  document.getElementById("climateYearSelect").addEventListener("change", () => {
+    setCurrentDataset();
+    rerenderForScenario();
+  });
+}
+
+function refreshClimateControl(preferredYear) {
+  const country = document.getElementById("countrySelect").value;
+  const select = document.getElementById("climateYearSelect");
+  const years = Object.keys(DATASETS[country] || {}).sort((a, b) => Number(a) - Number(b));
+  select.innerHTML = years.map(year => `<option value="${year}">${year}</option>`).join("");
+  select.value = preferredYear && years.includes(String(preferredYear)) ? String(preferredYear) : years[0];
+}
+
+function setCurrentDataset() {
+  const country = document.getElementById("countrySelect").value;
+  const climateYear = document.getElementById("climateYearSelect").value;
+  DATA = DATASETS[country][climateYear];
+}
+
+function rerenderForScenario() {
+  initControls();
+  renderModelSummary();
+  renderAll();
+}
 
 function showTip(event, html) {
   tooltip.innerHTML = html;
@@ -481,7 +626,9 @@ function renderSecurity() {
   const definitions = {
     lole: "LOLE (Loss of Load Expectation): number of hours in the simulated year with non-zero load shedding. This deterministic model-year value is reported as an LOLE-style metric.",
     eens: "EENS (Expected Energy Not Served): total unserved electricity demand in the simulated year. This deterministic model-year value is reported as an EENS-style metric.",
+    eensPct: "EENS as percent of annual demand: total unserved electricity demand divided by total annual electricity demand in the simulated model year.",
     peak: "Peak shed: maximum hourly load shedding in the simulated year.",
+    gas: "Total gas turbine generation: annual electricity output from simple-cycle and combined-cycle gas turbines in the simulated model year.",
     voll: "VoLL (Value of Lost Load): penalty cost assigned to involuntary load shedding in the optimisation, expressed in EUR/MWh."
   };
   const rows = DATA.security.map(row => `
@@ -491,7 +638,9 @@ function renderSecurity() {
       <td>${fmt.format(DATA.summary.find(item => item.period === row.period)?.energy_twh || 0)} TWh</td>
       <td><span class="metric-tip" data-tip="${definitions.lole}">${fmt0.format(row.lole_hours)} h/y</span></td>
       <td><span class="metric-tip" data-tip="${definitions.eens}">${fmt2.format(row.eens_gwh)} GWh/y</span></td>
+      <td><span class="metric-tip" data-tip="${definitions.eensPct}">${fmt2.format(row.eens_pct_demand)}%</span></td>
       <td><span class="metric-tip" data-tip="${definitions.peak}">${fmt1.format(row.peak_shed_mw / 1000)} GW</span></td>
+      <td><span class="metric-tip" data-tip="${definitions.gas}">${fmt2.format(row.gas_generation_twh)} TWh</span></td>
       <td><span class="metric-tip" data-tip="${definitions.voll}">${fmt0.format(row.voll_eur_per_mwh)} EUR/MWh</span></td>
     </tr>
   `).join("");
@@ -504,7 +653,9 @@ function renderSecurity() {
           <th>Annual demand</th>
           <th><span class="metric-tip" data-tip="${definitions.lole}">LOLE</span></th>
           <th><span class="metric-tip" data-tip="${definitions.eens}">EENS</span></th>
+          <th><span class="metric-tip" data-tip="${definitions.eensPct}">EENS / demand</span></th>
           <th><span class="metric-tip" data-tip="${definitions.peak}">Peak shed</span></th>
+          <th><span class="metric-tip" data-tip="${definitions.gas}">Gas generation</span></th>
           <th><span class="metric-tip" data-tip="${definitions.voll}">VoLL</span></th>
         </tr>
       </thead>
@@ -586,13 +737,45 @@ function renderGroupedBars(svgId, rows, xKey, yKey, groups, labelKey, legendId, 
   if (legendId) document.getElementById(legendId).innerHTML = groups.map(g => `<span><span class="swatch" style="background:${COLORS[g] || "#777"}"></span>${labelFor(g)}</span>`).join("");
 }
 
+function renderAveragePrices() {
+  const svg = document.getElementById("averagePriceChart"); clear(svg);
+  const { width, height, margin } = dims(svg);
+  const rows = (DATA.averagePrices || DATA.summary.map(row => ({
+    period: row.period,
+    average_price_eur_per_mwh: row.average_price
+  }))).slice().sort((a, b) => Number(a.period) - Number(b.period));
+  const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
+  const max = niceUpperBound(Math.max(...rows.map(r => r.average_price_eur_per_mwh), 0) * 1.12);
+  const y = scale(0, max, margin.top + plotH, margin.top);
+  addYAxis(svg, margin.left, y, max, margin.top, margin.top + plotH, v => fmt0.format(v), "EUR/MWh");
+  const band = plotW / rows.length;
+  rows.forEach((row, i) => {
+    const value = row.average_price_eur_per_mwh;
+    const rect = svgEl("rect", {
+      x: margin.left + i * band + band * 0.24,
+      y: y(value),
+      width: band * 0.52,
+      height: y(0) - y(value),
+      fill: COLORS.demand,
+      rx: 2
+    });
+    rect.addEventListener("mousemove", e => showTip(e, `<b>${row.period}</b><br>Average price: ${fmt2.format(value)} EUR/MWh`));
+    rect.addEventListener("mouseleave", hideTip);
+    svg.appendChild(rect);
+    const text = svgEl("text", { x: margin.left + i * band + band / 2, y: height - 12, "text-anchor": "middle", class: "tick" });
+    text.textContent = row.period;
+    svg.appendChild(text);
+  });
+}
+
 function renderCapture() {
   const svg = document.getElementById("captureChart"); clear(svg);
   const { width, height, margin } = dims(svg);
   const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
   const periods = [...new Set(DATA.capture.map(r => r.period))].sort();
-  const techs = DATA.captureTechnologies || ["wind", "solar", "gas", "gas_turbine_cc", "demand"];
-  const max = Math.max(...DATA.capture.map(r => r.capture_rate), 1) * 1.15;
+  const techs = (DATA.captureTechnologies || ["wind", "solar", "gas", "gas_turbine_cc", "demand"]).filter(tech => tech !== "gas");
+  const chartRows = DATA.capture.filter(row => techs.includes(row.technology));
+  const max = Math.max(...chartRows.map(r => r.capture_rate), 1) * 1.15;
   const y = scale(0, max, margin.top + plotH, margin.top);
   addYAxis(svg, margin.left, y, max, margin.top, margin.top + plotH, v => fmt2.format(v), "Capture rate");
   const band = plotW / periods.length;
@@ -616,25 +799,30 @@ function renderCapture() {
 }
 
 function renderDuration() {
-  const period = document.getElementById("durationPeriod").value;
-  const rows = DATA.duration[period] || [];
   const svg = document.getElementById("durationChart"); clear(svg);
   const { width, height, margin } = dims(svg);
   const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
+  const periods = Object.keys(DATA.duration || {}).sort((a, b) => Number(a) - Number(b));
+  const maxHours = Math.max(...periods.map(period => (DATA.duration[period] || []).length), 1);
   const maxY = Math.max(DATA.gasMarginalCostMax, 1);
-  const x = scale(1, rows.length, margin.left, margin.left + plotW);
+  const x = scale(1, maxHours, margin.left, margin.left + plotW);
   const y = scale(0, maxY, margin.top + plotH, margin.top);
   addYAxis(svg, margin.left, y, maxY, margin.top, margin.top + plotH, v => `${fmt0.format(v)}`, "EUR/MWh");
-  const points = rows.map(r => ({ x: r.hour, y: Math.min(r.price_eur_per_mwh, maxY) }));
-  svg.appendChild(svgEl("path", { d: pathLine(points, x, y), fill: "none", stroke: COLORS.demand, "stroke-width": 2.4 }));
-  rows.filter((_, i) => i % 90 === 0).forEach(r => {
-    const displayPrice = Math.min(r.price_eur_per_mwh, maxY);
-    const capped = r.price_eur_per_mwh > maxY ? "<br>Displayed at gas marginal-cost cap" : "";
-    const hit = svgEl("circle", { cx: x(r.hour), cy: y(displayPrice), r: 4, fill: "transparent" });
-    hit.addEventListener("mousemove", e => showTip(e, `<b>${period}, price rank ${r.hour}</b><br>Price: ${fmt2.format(r.price_eur_per_mwh)} EUR/MWh<br>Y-axis cap: ${fmt2.format(maxY)} EUR/MWh${capped}<br>Demand at hour: ${fmt1.format(r.demand / 1000)} GW`));
-    hit.addEventListener("mouseleave", hideTip);
-    svg.appendChild(hit);
+  periods.forEach((period, periodIndex) => {
+    const rows = DATA.duration[period] || [];
+    const color = YEAR_COLORS[periodIndex % YEAR_COLORS.length];
+    const points = rows.map(r => ({ x: r.hour, y: Math.min(r.price_eur_per_mwh, maxY) }));
+    svg.appendChild(svgEl("path", { d: pathLine(points, x, y), fill: "none", stroke: color, "stroke-width": 2.4 }));
+    rows.filter((_, i) => i % 90 === 0).forEach(r => {
+      const displayPrice = Math.min(r.price_eur_per_mwh, maxY);
+      const capped = r.price_eur_per_mwh > maxY ? "<br>Displayed at gas marginal-cost cap" : "";
+      const hit = svgEl("circle", { cx: x(r.hour), cy: y(displayPrice), r: 4, fill: "transparent" });
+      hit.addEventListener("mousemove", e => showTip(e, `<b>${period}, price rank ${r.hour}</b><br>Price: ${fmt2.format(r.price_eur_per_mwh)} EUR/MWh<br>Y-axis cap: ${fmt2.format(maxY)} EUR/MWh${capped}<br>Demand at hour: ${fmt1.format(r.demand / 1000)} GW`));
+      hit.addEventListener("mouseleave", hideTip);
+      svg.appendChild(hit);
+    });
   });
+  document.getElementById("durationLegend").innerHTML = periods.map((period, i) => `<span><span class="swatch" style="background:${YEAR_COLORS[i % YEAR_COLORS.length]}"></span>${period}</span>`).join("");
 }
 
 function renderWeek() {
@@ -671,20 +859,93 @@ function renderWeek() {
   svg.appendChild(svgEl("path", { d: pathLine(demandLine, x, y), fill: "none", stroke: COLORS.demand, "stroke-width": 2.2 }));
 }
 
+function clampDate(dateText) {
+  if (dateText < DATA.dateMin) return DATA.dateMin;
+  if (dateText > DATA.dateMax) return DATA.dateMax;
+  return dateText;
+}
+
+function presetDate(monthDay) {
+  const year = document.getElementById("weekPeriod").value || DATA.dateMin.slice(0, 4);
+  return clampDate(`${year}-${monthDay}`);
+}
+
+function highestSheddingWeekStart(period) {
+  const rows = DATA.weekData[period] || [];
+  const windowSize = 168;
+  if (rows.length <= windowSize) return rows[0]?.timestep.slice(0, 10) || DATA.dateMin;
+  const shed = rows.map(row => Math.max(row.load_shedding || 0, 0));
+  let running = shed.slice(0, windowSize).reduce((sum, value) => sum + value, 0);
+  const sums = [running];
+  for (let i = windowSize; i < shed.length; i++) {
+    running += shed[i] - shed[i - windowSize];
+    sums.push(running);
+  }
+  const maxShed = Math.max(...sums);
+  if (maxShed <= 1e-6) return rows[0].timestep.slice(0, 10);
+  let bestStart = 0;
+  let bestCenterDistance = Number.POSITIVE_INFINITY;
+  sums.forEach((sum, start) => {
+    if (Math.abs(sum - maxShed) > 1e-6) return;
+    let weightedIndex = 0;
+    for (let i = start; i < start + windowSize; i++) weightedIndex += i * shed[i];
+    const sheddingCenter = weightedIndex / sum;
+    const windowCenter = start + (windowSize - 1) / 2;
+    const centerDistance = Math.abs(sheddingCenter - windowCenter);
+    if (centerDistance < bestCenterDistance) {
+      bestCenterDistance = centerDistance;
+      bestStart = start;
+    }
+  });
+  return rows[bestStart].timestep.slice(0, 10);
+}
+
+function setActiveWeekPreset(preset) {
+  activeWeekPreset = preset;
+  const buttons = {
+    winter: document.getElementById("winterWeek"),
+    summer: document.getElementById("summerWeek"),
+    shed: document.getElementById("shedWeek")
+  };
+  Object.entries(buttons).forEach(([key, button]) => {
+    const isActive = key === preset;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+  });
+}
+
+function weekPresetDate(preset) {
+  const period = document.getElementById("weekPeriod").value;
+  if (preset === "winter") return presetDate("01-15");
+  if (preset === "summer") return presetDate("07-15");
+  return highestSheddingWeekStart(period);
+}
+
+function applyWeekPreset(preset) {
+  const date = document.getElementById("weekStart");
+  date.value = weekPresetDate(preset);
+  setActiveWeekPreset(preset);
+  renderWeek();
+}
+
 function initControls() {
   const periods = Object.keys(DATA.weekData).sort();
-  for (const id of ["durationPeriod", "weekPeriod"]) {
-    const select = document.getElementById(id);
-    select.innerHTML = periods.map(p => `<option value="${p}">${p}</option>`).join("");
-    select.value = periods[0];
-  }
+  const weekPeriod = document.getElementById("weekPeriod");
+  weekPeriod.innerHTML = periods.map(p => `<option value="${p}">${p}</option>`).join("");
+  weekPeriod.value = periods[0];
   const date = document.getElementById("weekStart");
   date.min = DATA.dateMin;
   date.max = DATA.dateMax;
-  date.value = DATA.dateMin;
-  document.getElementById("durationPeriod").addEventListener("change", renderDuration);
-  document.getElementById("weekPeriod").addEventListener("change", renderWeek);
-  date.addEventListener("change", renderWeek);
+  date.value = highestSheddingWeekStart(weekPeriod.value);
+  setActiveWeekPreset("shed");
+  weekPeriod.onchange = () => applyWeekPreset(activeWeekPreset || "shed");
+  date.onchange = () => {
+    setActiveWeekPreset(null);
+    renderWeek();
+  };
+  document.getElementById("winterWeek").onclick = () => applyWeekPreset("winter");
+  document.getElementById("summerWeek").onclick = () => applyWeekPreset("summer");
+  document.getElementById("shedWeek").onclick = () => applyWeekPreset("shed");
 }
 
 function renderAll() {
@@ -718,6 +979,7 @@ function renderAll() {
       formatValue: v => `${fmt1.format(v)} GW`
     }
   );
+  renderAveragePrices();
   renderCapture();
   renderSecurity();
   renderWeek();
@@ -738,7 +1000,9 @@ function renderAll() {
   );
 }
 
+initCountryControl();
 initControls();
+renderModelSummary();
 renderAll();
 window.addEventListener("resize", renderAll);
 </script>
@@ -748,7 +1012,7 @@ window.addEventListener("resize", renderAll);
 
 
 def main() -> None:
-    data = load_dashboard_data(OUTPUT_DIR)
+    data = load_dashboard_bundle(OUTPUT_DIR)
     html = HTML_TEMPLATE.replace("__DATA__", json.dumps(data, separators=(",", ":")))
     DASHBOARD_PATH.write_text(html, encoding="utf-8")
     print(f"Wrote dashboard to {DASHBOARD_PATH}")
