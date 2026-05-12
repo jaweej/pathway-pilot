@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Bare-bones multi-year PyPSA pathway model — implementation spec</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --bg: #f7f8f6;
+      --panel: #ffffff;
+      --ink: #1f2933;
+      --muted: #5f6c7b;
+      --line: #d8ddd3;
+      --green: #2f8f46;
+      --red: #c7352f;
+      --blue: #245b91;
+      --code: #f1f3ef;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
+      line-height: 1.55;
+    }
+    header {
+      background: linear-gradient(135deg, #203028, #39513f);
+      color: white;
+      padding: 42px 56px;
+    }
+    header h1 {
+      margin: 0 0 8px 0;
+      font-size: 32px;
+      letter-spacing: -0.03em;
+    }
+    header p {
+      margin: 0;
+      max-width: 900px;
+      color: #dfe8db;
+      font-size: 17px;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 34px 28px 60px;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 26px 30px;
+      margin: 20px 0;
+      box-shadow: 0 8px 24px rgba(31, 41, 51, 0.04);
+    }
+    h2 {
+      margin-top: 0;
+      font-size: 23px;
+      letter-spacing: -0.02em;
+    }
+    h3 {
+      margin-top: 28px;
+      font-size: 18px;
+    }
+    .tag {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: #e9efe7;
+      color: #294333;
+      font-size: 13px;
+      margin-right: 6px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      background: #fbfcfa;
+    }
+    .card strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0;
+      font-size: 14px;
+    }
+    th, td {
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eef2ec;
+      font-weight: 650;
+    }
+    code, pre {
+      font-family: Consolas, Monaco, "Courier New", monospace;
+    }
+    code {
+      background: var(--code);
+      padding: 2px 5px;
+      border-radius: 5px;
+    }
+    pre {
+      background: #20262e;
+      color: #eef4ed;
+      padding: 16px;
+      border-radius: 12px;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+      border-radius: 0;
+    }
+    .flow {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 16px 0 6px;
+    }
+    .node {
+      padding: 12px 16px;
+      border-radius: 12px;
+      background: #eef2ec;
+      border: 1px solid var(--line);
+      min-width: 130px;
+      text-align: center;
+      font-weight: 650;
+    }
+    .arrow {
+      color: var(--muted);
+      font-size: 22px;
+    }
+    .red { color: var(--red); font-weight: 700; }
+    .green { color: var(--green); font-weight: 700; }
+    .blue { color: var(--blue); font-weight: 700; }
+    .note {
+      border-left: 4px solid var(--blue);
+      background: #eef5fb;
+      padding: 12px 14px;
+      border-radius: 8px;
+      margin: 14px 0;
+    }
+    .warn {
+      border-left: 4px solid var(--red);
+      background: #fff1ef;
+      padding: 12px 14px;
+      border-radius: 8px;
+      margin: 14px 0;
+    }
+    .small {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    @media (max-width: 850px) {
+      header { padding: 32px 24px; }
+      .grid { grid-template-columns: 1fr; }
+      section { padding: 22px; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Bare-bones multi-year PyPSA pathway model</h1>
+  <p>Implementation spec for a one-zone power-only pilot covering 2030, 2040 and 2050. Linear capacity expansion and dispatch with wind, solar, gas turbine and load shedding. Solver: HiGHS. Development style: red/green TDD.</p>
+</header>
+
+<main>
+
+<section>
+  <h2>1. Scope</h2>
+  <p>
+    Build the smallest useful PyPSA model for testing multi-investment-period logic.
+    The model is intentionally not policy-grade: no existing fleet, no CO₂ accounting, no storage, no transmission, no unit commitment.
+  </p>
+  <div>
+    <span class="tag">PyPSA</span>
+    <span class="tag">one-zone</span>
+    <span class="tag">2030/2040/2050</span>
+    <span class="tag">hourly</span>
+    <span class="tag">HiGHS</span>
+    <span class="tag">TDD</span>
+  </div>
+
+  <div class="flow">
+    <div class="node">Config</div><div class="arrow">→</div>
+    <div class="node">Input data</div><div class="arrow">→</div>
+    <div class="node">Build PyPSA network</div><div class="arrow">→</div>
+    <div class="node">Optimise</div><div class="arrow">→</div>
+    <div class="node">Check outputs</div>
+  </div>
+</section>
+
+<section>
+  <h2>2. Model formulation</h2>
+
+  <div class="grid">
+    <div class="card">
+      <strong>Investment periods</strong>
+      2030, 2040, 2050. Period weights are configurable.
+    </div>
+    <div class="card">
+      <strong>Temporal resolution</strong>
+      8,760 hourly snapshots per investment period.
+    </div>
+    <div class="card">
+      <strong>Technologies</strong>
+      Wind, solar, gas turbine, load shedding.
+    </div>
+  </div>
+
+  <h3>Decision variables</h3>
+  <table>
+    <tr><th>Variable</th><th>Description</th></tr>
+    <tr><td>Capacity</td><td>Endogenous capacity for wind, solar and gas turbine by build year.</td></tr>
+    <tr><td>Dispatch</td><td>Hourly generation from wind, solar, gas turbine and load shedding.</td></tr>
+  </table>
+
+  <h3>Objective</h3>
+  <p>
+    Minimise discounted system cost:
+    investment cost + fixed O&amp;M + gas variable generation cost + load shedding penalty.
+  </p>
+
+  <h3>Constraints</h3>
+  <table>
+    <tr><th>Constraint</th><th>Purpose</th></tr>
+    <tr><td>Hourly power balance</td><td>Demand must be met in every hour and period.</td></tr>
+    <tr><td>RES availability</td><td>Wind and solar dispatch limited by hourly capacity factors.</td></tr>
+    <tr><td>Capacity potentials</td><td>Maximum buildable wind and solar capacity.</td></tr>
+    <tr><td>Lifetime logic</td><td>Capacity built in earlier periods remains active if lifetime allows.</td></tr>
+    <tr><td>Load shedding</td><td>High-cost feasibility backstop.</td></tr>
+  </table>
+
+  <div class="warn">
+    <strong>Important:</strong> without CO₂ cost/caps, gas may dominate if assumed gas marginal cost is low. That is acceptable for debugging but not for a transition-to-zero-emissions result.
+  </div>
+</section>
+
+<section>
+  <h2>3. Repository layout</h2>
+  <p>
+    Current repository contents are intentionally smaller than the full model target:
+    <code>requirements.txt</code>, this spec, two data-prep scripts, and
+    <code>src/pathway_pilot/config.py</code> plus <code>src/pathway_pilot/pecd.py</code>.
+    The tree below is the planned model layout, not the current state.
+  </p>
+  <pre><code>pathway-pilot/
+├─ requirements.txt
+├─ README.md
+├─ config/
+│  └─ model_config.yaml
+├─ docs/
+│  └─ pypsa_multiyear_pilot_spec.html
+├─ scripts/
+│  ├─ build_pecd_capacity_factors.py
+│  └─ build_techcat_gas_turbine_simple_cycle_large.py
+├─ src/
+│  └─ pathway_pilot/
+│     ├─ __init__.py
+│     ├─ config.py
+│     ├─ synthetic_data.py
+│     ├─ build_network.py
+│     ├─ solve.py
+│     └─ outputs.py
+└─ tests/
+   ├─ test_config.py
+   ├─ test_synthetic_data.py
+   ├─ test_build_network.py
+   └─ test_solve_smoke.py</code></pre>
+
+  <p>
+    Keep the implementation small. Avoid a complex pipeline until the multi-period logic is proven.
+    Generated and source input data should live outside the git repository under
+    <code>DEV_DATA_DIR</code>. The current default is <code>C:\Users\B510067\dev_data</code>,
+    overrideable with <code>PATHWAY_PILOT_DEV_DATA_DIR</code>.
+  </p>
+</section>
+
+<section>
+  <h2>4. Dependencies</h2>
+  <p>
+    Use the repository-local <code>.venv</code> and install with <code>pip</code>.
+    This is the supported setup for the pilot.
+  </p>
+
+  <pre><code>py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt</code></pre>
+
+  <p>
+    Current <code>requirements.txt</code> supports the data preparation scripts:
+  </p>
+  <pre><code>pandas&gt;=2.2
+pyarrow&gt;=16
+openpyxl&gt;=3.1</code></pre>
+
+  <p>
+    Add these to <code>requirements.txt</code> when implementing and testing the PyPSA model layer:
+  </p>
+  <pre><code>pypsa
+highspy
+numpy
+pyyaml
+matplotlib
+pytest
+ruff</code></pre>
+
+  <div class="note">
+    <code>openpyxl</code> is needed by pandas when reading the TechCat <code>.xlsx</code> workbook.
+  </div>
+</section>
+
+<section>
+  <h2>5. Config-first assumptions</h2>
+  <p>
+    Put all placeholder assumptions in one YAML file so TYNDP/DEA data can replace them later.
+  </p>
+
+  <pre><code># config/model_config.yaml
+investment_periods: [2030, 2040, 2050]
+
+# Adjustable: what each modelled year represents in the objective.
+period_weights:
+  2030: 10
+  2040: 10
+  2050: 10
+
+discount_rate: 0.04
+
+currency: "EUR"
+
+technologies:
+  wind:
+    capex_eur_per_mw:
+      2030: 1200000
+      2040: 1050000
+      2050: 950000
+    fixed_om_eur_per_mw_year:
+      2030: 30000
+      2040: 28000
+      2050: 26000
+    lifetime_years: 30
+    max_capacity_mw: 50000
+
+  solar:
+    capex_eur_per_mw:
+      2030: 500000
+      2040: 400000
+      2050: 350000
+    fixed_om_eur_per_mw_year:
+      2030: 10000
+      2040: 9000
+      2050: 8000
+    lifetime_years: 30
+    max_capacity_mw: 50000
+
+  gas_turbine:
+    capex_eur_per_mw:
+      2030: 650000
+      2040: 650000
+      2050: 650000
+    fixed_om_eur_per_mw_year:
+      2030: 15000
+      2040: 15000
+      2050: 15000
+    variable_cost_eur_per_mwh:
+      2030: 110
+      2040: 120
+      2050: 130
+    lifetime_years: 30
+    max_capacity_mw: 100000
+
+  load_shedding:
+    variable_cost_eur_per_mwh: 10000
+    max_capacity_mw: 1000000</code></pre>
+
+  <div class="note">
+    Placeholder gas costs above are deliberately simple. Replace with scenario-consistent fuel price × heat rate + variable O&amp;M when real assumptions are available.
+  </div>
+</section>
+
+<section>
+  <h2>6. Input data format</h2>
+
+  <p>
+    The repository already has real-data preparation code. The PyPSA model layer should
+    consume tidy in-memory tables derived from those prepared Parquet files, while tests can
+    still use deterministic synthetic data.
+  </p>
+
+  <h3>Local data root</h3>
+  <p>
+    <code>src/pathway_pilot/config.py</code> defines <code>DEV_DATA_DIR</code> from
+    <code>PATHWAY_PILOT_DEV_DATA_DIR</code>, defaulting to
+    <code>C:\Users\B510067\dev_data</code>.
+  </p>
+
+  <h3>PECD capacity-factor source CSVs</h3>
+  <p>
+    <code>scripts/build_pecd_capacity_factors.py</code> expects TYNDP PECD files under
+    <code>DEV_DATA_DIR\TYNDP24\PECD\PECD</code>. Current code covers target years
+    <code>2030</code> and <code>2040</code>, zones <code>DKE1</code> and <code>DKW1</code>,
+    and technologies <code>onshore_wind</code> and <code>solar</code>.
+    The model spec includes <code>2050</code>, so either add <code>2050</code> PECD processing
+    or define an explicit fallback/interpolation rule before using real capacity factors
+    for all model periods.
+  </p>
+  <pre><code>{target_year}\PECD_Wind_Onshore_{target_year}_{zone}_edition 2023.2.csv
+{target_year}\PECD_LFSolarPV_{target_year}_{zone}_edition 2023.2.csv</code></pre>
+  <table>
+    <tr><th>column</th><th>example</th><th>meaning</th></tr>
+    <tr><td>Date</td><td>01.01.</td><td>Day and month. The reader skips the first 10 metadata rows.</td></tr>
+    <tr><td>Hour</td><td>1</td><td>One-based hour of day; converted to zero-based timestamp hour.</td></tr>
+    <tr><td>weather-year columns</td><td>1982</td><td>One column per weather year, melted to long format.</td></tr>
+  </table>
+
+  <h3>Processed capacity-factor Parquet</h3>
+  <p>
+    The PECD script writes
+    <code>DEV_DATA_DIR\pathway-pilot\tvar\pecd_capacity_factors_2030_2040.parquet</code>.
+  </p>
+  <table>
+    <tr><th>column</th><th>example</th><th>meaning</th></tr>
+    <tr><td>target_year</td><td>2040</td><td>PECD scenario year; currently 2030 or 2040.</td></tr>
+    <tr><td>weather_year</td><td>1982</td><td>Weather year represented by the source column.</td></tr>
+    <tr><td>zone</td><td>DKE1</td><td>PECD zone.</td></tr>
+    <tr><td>technology</td><td>onshore_wind</td><td><code>onshore_wind</code> or <code>solar</code>.</td></tr>
+    <tr><td>timestamp</td><td>1982-01-01 00:00</td><td>Hourly timestamp built from weather year, Date and Hour.</td></tr>
+    <tr><td>capacity_factor</td><td>0.47</td><td>Float32 capacity factor.</td></tr>
+    <tr><td>source_file</td><td>PECD_LFSolarPV_2030_DKE1_edition 2023.2.csv</td><td>Traceability back to source file.</td></tr>
+  </table>
+
+  <h3>TechCat gas turbine source and output</h3>
+  <p>
+    <code>scripts/build_techcat_gas_turbine_simple_cycle_large.py</code> reads
+    <code>DEV_DATA_DIR\techcat\technology_data_for_el_and_dh.xlsx</code>, sheet
+    <code>04 Gas turb. simple cycle, L</code>, using ctrl-estimate columns for
+    <code>2015</code>, <code>2020</code>, <code>2030</code> and <code>2050</code>.
+    It interpolates <code>2040</code> as the average of <code>2030</code> and <code>2050</code>.
+  </p>
+  <p>
+    The script writes
+    <code>DEV_DATA_DIR\pathway-pilot\tech\gas_turbine_simple_cycle_large.parquet</code>.
+  </p>
+  <table>
+    <tr><th>column</th><th>meaning</th></tr>
+    <tr><td>year</td><td>2015, 2020, 2030, interpolated 2040, and 2050.</td></tr>
+    <tr><td>electrical_efficiency_net_annual_avg</td><td>Net annual-average electrical efficiency.</td></tr>
+    <tr><td>technical_lifetime_years</td><td>Technology lifetime.</td></tr>
+    <tr><td>total_nominal_investment_meur_per_mw_e</td><td>Nominal investment cost.</td></tr>
+    <tr><td>variable_om_eur_per_mwh_e</td><td>Variable O&amp;M.</td></tr>
+    <tr><td>fixed_om_eur_per_mw_e_per_year</td><td>Fixed O&amp;M.</td></tr>
+  </table>
+
+  <p>
+    Planned model-facing demand and capacity-factor inputs may still be exposed as long tables
+    with <code>period</code>, <code>timestamp</code> and value columns, but they should be adapters
+    over the prepared Parquet files rather than a separate hand-maintained CSV convention.
+  </p>
+</section>
+
+<section>
+  <h2>7. Red/green TDD plan</h2>
+
+  <h3><span class="red">Red 1</span>: config loads and validates</h3>
+  <pre><code>def test_config_loads_period_weights():
+    cfg = load_config("config/model_config.yaml")
+    assert cfg.investment_periods == [2030, 2040, 2050]
+    assert cfg.period_weights[2030] &gt; 0</code></pre>
+
+  <p><span class="green">Green:</span> implement a small YAML loader with basic validation.</p>
+
+  <h3><span class="red">Red 2</span>: synthetic data has correct shape</h3>
+  <pre><code>def test_synthetic_hourly_data_shape():
+    data = make_synthetic_inputs(periods=[2030, 2040, 2050])
+    assert len(data.demand) == 3 * 8760
+    assert data.wind_cf["capacity_factor"].between(0, 1).all()
+    assert data.solar_cf["capacity_factor"].between(0, 1).all()</code></pre>
+
+  <p><span class="green">Green:</span> implement deterministic synthetic hourly demand, wind CF and solar CF.</p>
+
+  <h3><span class="red">Red 3</span>: PyPSA network has expected components</h3>
+  <pre><code>def test_network_contains_core_components():
+    network = build_network(cfg, data)
+    assert "electricity" in network.buses.index
+    assert {"wind", "solar", "gas_turbine", "load_shedding"}.issubset(network.generators.index)</code></pre>
+
+  <p><span class="green">Green:</span> create one bus, one load, four generators and multi-period snapshots.</p>
+
+  <h3><span class="red">Red 4</span>: smoke solve completes with HiGHS</h3>
+  <pre><code>def test_smoke_solve_highs():
+    network = build_network(cfg, data)
+    status, condition = network.optimize(
+        multi_investment_periods=True,
+        solver_name="highs",
+    )
+    assert status == "ok"
+    assert condition == "optimal"</code></pre>
+
+  <p><span class="green">Green:</span> fix model details until HiGHS finds an optimum.</p>
+
+  <h3><span class="red">Red 5</span>: solution is physically plausible</h3>
+  <pre><code>def test_no_unserved_energy_when_load_shedding_is_expensive():
+    solved = solve_model(cfg, data)
+    load_shed_mwh = solved.generators_t.p["load_shedding"].sum()
+    assert load_shed_mwh &lt; 1e-3</code></pre>
+
+  <p><span class="green">Green:</span> adjust max capacities and costs so normal generation can meet demand.</p>
+</section>
+
+<section>
+  <h2>8. Implementation sketch</h2>
+
+  <h3>Build network</h3>
+  <pre><code>def build_network(cfg, data):
+    import pypsa
+    import pandas as pd
+
+    network = pypsa.Network()
+
+    snapshots = []
+    for period in cfg.investment_periods:
+        hours = pd.date_range(f"{period}-01-01", periods=8760, freq="h")
+        snapshots.extend([(period, ts) for ts in hours])
+
+    network.snapshots = pd.MultiIndex.from_tuples(
+        snapshots,
+        names=["period", "timestep"],
+    )
+    network.investment_periods = pd.Index(cfg.investment_periods)
+    network.investment_period_weightings["objective"] = pd.Series(cfg.period_weights)
+
+    network.add("Bus", "electricity")
+
+    # Add one load time series indexed by the multi-period snapshots.
+    network.add(
+        "Load",
+        "demand",
+        bus="electricity",
+        p_set=data.demand_series,
+    )
+
+    # Extendable renewable generators.
+    network.add(
+        "Generator",
+        "wind",
+        bus="electricity",
+        carrier="wind",
+        p_nom_extendable=True,
+        p_nom_max=cfg.tech.wind.max_capacity_mw,
+        capital_cost=cfg.tech.wind.annualised_cost_by_period,
+        p_max_pu=data.wind_cf_series,
+        lifetime=cfg.tech.wind.lifetime_years,
+        build_year=2030,
+    )
+
+    network.add(
+        "Generator",
+        "solar",
+        bus="electricity",
+        carrier="solar",
+        p_nom_extendable=True,
+        p_nom_max=cfg.tech.solar.max_capacity_mw,
+        capital_cost=cfg.tech.solar.annualised_cost_by_period,
+        p_max_pu=data.solar_cf_series,
+        lifetime=cfg.tech.solar.lifetime_years,
+        build_year=2030,
+    )
+
+    network.add(
+        "Generator",
+        "gas_turbine",
+        bus="electricity",
+        carrier="gas",
+        p_nom_extendable=True,
+        p_nom_max=cfg.tech.gas_turbine.max_capacity_mw,
+        capital_cost=cfg.tech.gas_turbine.annualised_cost_by_period,
+        marginal_cost=cfg.tech.gas_turbine.variable_cost_by_period,
+        lifetime=cfg.tech.gas_turbine.lifetime_years,
+        build_year=2030,
+    )
+
+    network.add(
+        "Generator",
+        "load_shedding",
+        bus="electricity",
+        carrier="load_shedding",
+        p_nom=cfg.tech.load_shedding.max_capacity_mw,
+        marginal_cost=cfg.tech.load_shedding.variable_cost_eur_per_mwh,
+    )
+
+    return network</code></pre>
+
+  <div class="warn">
+    This is only a sketch. In real PyPSA multi-investment models, period-specific investment options are often represented as separate assets per build year, e.g. <code>wind_2030</code>, <code>wind_2040</code>, <code>wind_2050</code>, each with its own <code>build_year</code>, cost and lifetime. Use that pattern if one generator with period-varying costs becomes awkward.
+  </div>
+</section>
+
+<section>
+  <h2>9. Preferred simple asset pattern</h2>
+
+  <p>
+    For clarity, use one generator per technology-build-year:
+  </p>
+
+  <pre><code>wind_2030, wind_2040, wind_2050
+solar_2030, solar_2040, solar_2050
+gas_turbine_2030, gas_turbine_2040, gas_turbine_2050</code></pre>
+
+  <p>
+    This makes costs, build years and lifetimes explicit. It also avoids ambiguity about whether a single extendable asset can invest repeatedly at changing costs.
+  </p>
+
+  <table>
+    <tr><th>Asset</th><th>build_year</th><th>capital_cost</th><th>active in periods</th></tr>
+    <tr><td>wind_2030</td><td>2030</td><td>2030 wind cost</td><td>2030, 2040, 2050 if lifetime ≥ 20</td></tr>
+    <tr><td>wind_2040</td><td>2040</td><td>2040 wind cost</td><td>2040, 2050 if lifetime ≥ 10</td></tr>
+    <tr><td>wind_2050</td><td>2050</td><td>2050 wind cost</td><td>2050</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>10. Output checks</h2>
+
+  <table>
+    <tr><th>Output</th><th>Check</th></tr>
+    <tr><td>Installed capacity by technology and build year</td><td>Does investment timing make sense?</td></tr>
+    <tr><td>Generation by technology and period</td><td>Does gas provide backup rather than all energy?</td></tr>
+    <tr><td>Load shedding</td><td>Should be zero or near zero in normal runs.</td></tr>
+    <tr><td>System cost by category</td><td>Investment vs fixed O&amp;M vs variable cost.</td></tr>
+    <tr><td>Capacity factors realised</td><td>Compare wind/solar generation to potential.</td></tr>
+  </table>
+
+  <h3>Minimal plots</h3>
+  <ul>
+    <li>Installed capacity by build year and technology.</li>
+    <li>Annual generation by period and technology.</li>
+    <li>One representative week dispatch stack for each period.</li>
+    <li>Load duration curve with gas and load shedding highlighted.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>11. First implementation milestones</h2>
+
+  <table>
+    <tr><th>Milestone</th><th>Definition of done</th></tr>
+    <tr><td>M1: Config + synthetic data</td><td>Tests pass; 3 × 8760 rows for demand and CFs.</td></tr>
+    <tr><td>M2: Network builds</td><td>PyPSA network has multi-period snapshots and expected components.</td></tr>
+    <tr><td>M3: HiGHS solve</td><td>Smoke test returns optimal solution.</td></tr>
+    <tr><td>M4: Basic outputs</td><td>CSV summary and 2–3 plots generated.</td></tr>
+    <tr><td>M5: Replace synthetic inputs</td><td>Prepared PECD capacity factors and TechCat gas-turbine costs can be loaded without code changes; demand source and 2050 CF handling are explicit.</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>12. Keep out of v0</h2>
+
+  <p>Do not add these until the pilot solves and produces interpretable results:</p>
+  <table>
+    <tr><th>Feature</th><th>Reason to defer</th></tr>
+    <tr><td>Storage</td><td>Adds time-coupled state variables and complicates interpretation.</td></tr>
+    <tr><td>CO₂ constraints</td><td>Important later, but not needed for debugging pathway mechanics.</td></tr>
+    <tr><td>Multiple zones</td><td>Transmission and spatial data will distract from core logic.</td></tr>
+    <tr><td>Unit commitment</td><td>Turns a simple LP into a much harder MILP.</td></tr>
+    <tr><td>Endogenous learning</td><td>Can require nonlinear or approximate formulations.</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>13. Main caveats</h2>
+
+  <ul>
+    <li><strong>Perfect foresight:</strong> the model knows future costs and demand when investing in 2030.</li>
+    <li><strong>Sparse periods:</strong> 2030, 2040 and 2050 may create lumpy build-outs.</li>
+    <li><strong>No existing fleet:</strong> useful for testing, unrealistic for transition analysis.</li>
+    <li><strong>No CO₂ accounting:</strong> results should not be described as decarbonisation pathways.</li>
+    <li><strong>Synthetic data:</strong> fine for TDD, not for conclusions.</li>
+  </ul>
+
+  <p class="small">
+    Recommended next step after v0: add existing fleet and CO₂ caps before interpreting results as a transition pathway.
+  </p>
+</section>
+
+</main>
+</body>
+</html>
