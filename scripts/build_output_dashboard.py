@@ -159,11 +159,28 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
 
     summary = []
     security = []
+    generation_shares = []
     for period, group in hourly.groupby("period"):
         shed = group["load_shedding"].clip(lower=0)
         shed_hours = int((shed > 1e-6).sum())
         shed_energy_mwh = float(shed.sum())
         demand_energy_mwh = float(group["demand"].sum())
+        generation_totals = {
+            "solar": float(group["solar"].clip(lower=0).sum()),
+            "wind": float(group["wind"].clip(lower=0).sum()),
+            "gas": float(group[GAS_CARRIERS].clip(lower=0).sum(axis=1).sum()),
+            "load_shedding": shed_energy_mwh,
+        }
+        generation_total = sum(generation_totals.values())
+        for carrier, value in generation_totals.items():
+            generation_shares.append(
+                {
+                    "period": int(period),
+                    "carrier": carrier,
+                    "share": _round(100 * value / generation_total if generation_total else 0),
+                    "energy_twh": _round(value / 1_000_000),
+                }
+            )
         summary.append(
             {
                 "period": int(period),
@@ -208,6 +225,7 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
         "activeCapacity": active_rows,
         "duration": duration,
         "capture": capture,
+        "generationShares": generation_shares,
         "security": security,
         "gasMarginalCostMax": _round(gas_marginal_cost_max),
         "capacityCarriers": CAPACITY_CARRIERS,
@@ -363,6 +381,42 @@ HTML_TEMPLATE = r"""<!doctype html>
       align-items: center;
       margin-bottom: 12px;
     }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .tab-button[aria-selected="true"] {
+      border-color: #17202a;
+      background: #17202a;
+      color: white;
+    }
+    .tab-panel[hidden] {
+      display: none;
+    }
+    .region-picker {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .region-picker label {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      padding: 6px 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: white;
+      color: var(--ink);
+    }
+    .region-picker input {
+      margin: 0;
+      width: 14px;
+      height: 14px;
+      padding: 0;
+      accent-color: #17202a;
+    }
     label {
       color: var(--muted);
       font-size: 13px;
@@ -445,13 +499,18 @@ HTML_TEMPLATE = r"""<!doctype html>
   <p id="modelSummary">One-zone capacity expansion and dispatch results. The 2050 time series reuses 2040 profiles.</p>
 </header>
 <main>
-  <div class="controls">
-    <label for="countrySelect">Country</label>
-    <select id="countrySelect"></select>
-    <label for="climateYearSelect">Climate year</label>
-    <select id="climateYearSelect"></select>
+  <div class="tabs" role="tablist" aria-label="Dashboard views">
+    <button class="tab-button" id="detailsTab" type="button" role="tab" aria-selected="true" aria-controls="detailsPanel">Scenario Details</button>
+    <button class="tab-button" id="compareTab" type="button" role="tab" aria-selected="false" aria-controls="comparePanel">DK/NL Comparison</button>
   </div>
-  <section class="grid">
+  <section id="detailsPanel" class="tab-panel" role="tabpanel" aria-labelledby="detailsTab">
+    <div class="controls">
+      <label for="countrySelect">Country</label>
+      <select id="countrySelect"></select>
+      <label for="climateYearSelect">Climate year</label>
+      <select id="climateYearSelect"></select>
+    </div>
+    <div class="grid">
     <div class="panel">
       <h2>Active Capacity By Model Year</h2>
       <svg id="capacityChart"></svg>
@@ -509,6 +568,27 @@ HTML_TEMPLATE = r"""<!doctype html>
       <svg id="capexChart"></svg>
       <div class="legend" id="capexLegend"></div>
     </div>
+    </div>
+  </section>
+  <section id="comparePanel" class="tab-panel" role="tabpanel" aria-labelledby="compareTab" hidden>
+    <div class="controls">
+      <label>Regions</label>
+      <div class="region-picker" id="comparisonRegionPicker"></div>
+      <label for="comparisonClimateYearSelect">Climate year</label>
+      <select id="comparisonClimateYearSelect"></select>
+    </div>
+    <div class="grid">
+      <div class="panel">
+        <h2>Annual Baseload Prices</h2>
+        <svg id="comparisonPriceChart"></svg>
+        <div class="legend" id="comparisonPriceLegend"></div>
+      </div>
+      <div class="panel">
+        <h2>Generation Shares</h2>
+        <svg id="comparisonGenerationChart"></svg>
+        <div class="legend" id="comparisonGenerationLegend"></div>
+      </div>
+    </div>
   </section>
 </main>
 <div class="tooltip" id="tooltip"></div>
@@ -519,6 +599,7 @@ let DATA;
 let activeWeekPreset = "shed";
 const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", gas_turbine_cc: "#00a6a6", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058" };
 const YEAR_COLORS = ["#111827", "#2f80ed", "#18a058", "#c43d3d", "#7a5195"];
+const COUNTRY_COLORS = ["#111827", "#2f80ed", "#18a058", "#c43d3d", "#7a5195", "#00a6a6"];
 const LABELS = { wind: "Wind", solar: "Solar", gas: "Gas turbine", gas_turbine_cc: "Gas turbine CC", load_shedding: "Load shedding", demand: "Demand" };
 const tooltip = document.getElementById("tooltip");
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
@@ -526,6 +607,7 @@ const fmt0 = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 const fmt1 = new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const fmt2 = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function labelFor(key) { return LABELS[key] || key.replaceAll("_", " "); }
+function generationShareLabel(key) { return key === "gas" ? "Gas" : labelFor(key); }
 function renderModelSummary() {
   const meta = DATA.metadata || {};
   const demand = (meta.demand_zones || ["DKE1", "DKW1"]).join(" + ");
@@ -573,6 +655,39 @@ function rerenderForScenario() {
   renderAll();
 }
 
+function selectedComparisonRegions() {
+  return [...document.querySelectorAll("#comparisonRegionPicker input:checked")]
+    .map(input => input.value)
+    .filter(country => DATASETS[country]);
+}
+
+function comparisonClimateYear() {
+  return document.getElementById("comparisonClimateYearSelect").value;
+}
+
+function initComparisonControls() {
+  const countries = Object.keys(DATASETS).sort();
+  const picker = document.getElementById("comparisonRegionPicker");
+  const defaultCountries = countries.filter(country => ["DK", "NL"].includes(country));
+  const selected = defaultCountries.length ? defaultCountries : countries;
+  picker.innerHTML = countries.map(country => `
+    <label>
+      <input type="checkbox" value="${country}" ${selected.includes(country) ? "checked" : ""}>
+      ${country}
+    </label>
+  `).join("");
+  picker.querySelectorAll("input").forEach(input => input.addEventListener("change", renderComparison));
+
+  const climateSelect = document.getElementById("comparisonClimateYearSelect");
+  const climateYears = [...new Set(countries.flatMap(country => Object.keys(DATASETS[country] || {})))]
+    .sort((a, b) => Number(a) - Number(b));
+  climateSelect.innerHTML = climateYears.map(year => `<option value="${year}">${year}</option>`).join("");
+  climateSelect.value = APP_DATA.defaultClimateYear && climateYears.includes(String(APP_DATA.defaultClimateYear))
+    ? String(APP_DATA.defaultClimateYear)
+    : climateYears[0];
+  climateSelect.addEventListener("change", renderComparison);
+}
+
 function showTip(event, html) {
   tooltip.innerHTML = html;
   tooltip.style.left = event.clientX + "px";
@@ -586,6 +701,11 @@ function svgEl(tag, attrs = {}) {
   return el;
 }
 function clear(svg) { while (svg.firstChild) svg.removeChild(svg.firstChild); }
+function addEmpty(svg, message) {
+  const text = svgEl("text", { x: 70, y: 90, class: "tick" });
+  text.textContent = message;
+  svg.appendChild(text);
+}
 function dims(svg) {
   const box = svg.getBoundingClientRect();
   return { width: Math.max(box.width, 320), height: Math.max(box.height, 260), margin: { top: 18, right: 20, bottom: 38, left: 58 } };
@@ -620,6 +740,23 @@ function addYAxis(svg, x, yScale, max, plotTop, plotBottom, formatTick, label) {
 }
 function pathLine(points, x, y) {
   return points.map((p, i) => `${i ? "L" : "M"}${x(p.x).toFixed(2)},${y(p.y).toFixed(2)}`).join(" ");
+}
+
+function initTabs() {
+  const tabs = [
+    { button: document.getElementById("detailsTab"), panel: document.getElementById("detailsPanel") },
+    { button: document.getElementById("compareTab"), panel: document.getElementById("comparePanel") }
+  ];
+  tabs.forEach(tab => {
+    tab.button.addEventListener("click", () => {
+      tabs.forEach(item => {
+        const selected = item === tab;
+        item.button.setAttribute("aria-selected", selected ? "true" : "false");
+        item.panel.hidden = !selected;
+      });
+      if (tab.panel.id === "comparePanel") renderComparison();
+    });
+  });
 }
 
 function renderSecurity() {
@@ -825,6 +962,113 @@ function renderDuration() {
   document.getElementById("durationLegend").innerHTML = periods.map((period, i) => `<span><span class="swatch" style="background:${YEAR_COLORS[i % YEAR_COLORS.length]}"></span>${period}</span>`).join("");
 }
 
+function comparisonDatasets() {
+  const climateYear = comparisonClimateYear();
+  return selectedComparisonRegions()
+    .map((country, i) => ({
+      country,
+      color: COUNTRY_COLORS[i % COUNTRY_COLORS.length],
+      data: DATASETS[country]?.[climateYear]
+    }))
+    .filter(item => item.data);
+}
+
+function renderComparisonPrices(items) {
+  const svg = document.getElementById("comparisonPriceChart"); clear(svg);
+  const { width, height, margin } = dims(svg);
+  if (!items.length) {
+    addEmpty(svg, "No selected regions have data for this climate year.");
+    document.getElementById("comparisonPriceLegend").innerHTML = "";
+    return;
+  }
+  const periods = [...new Set(items.flatMap(item => item.data.averagePrices.map(row => row.period)))]
+    .sort((a, b) => Number(a) - Number(b));
+  const values = items.flatMap(item => item.data.averagePrices.map(row => row.average_price_eur_per_mwh));
+  const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
+  const max = niceUpperBound(Math.max(...values, 1) * 1.12);
+  const x = scale(0, Math.max(periods.length - 1, 1), margin.left, margin.left + plotW);
+  const y = scale(0, max, margin.top + plotH, margin.top);
+  addYAxis(svg, margin.left, y, max, margin.top, margin.top + plotH, v => fmt0.format(v), "EUR/MWh");
+  periods.forEach((period, i) => {
+    const text = svgEl("text", { x: x(i), y: height - 12, "text-anchor": "middle", class: "tick" });
+    text.textContent = period;
+    svg.appendChild(text);
+  });
+  items.forEach(item => {
+    const rowsByPeriod = Object.fromEntries(item.data.averagePrices.map(row => [row.period, row]));
+    const points = periods
+      .map((period, i) => ({ row: rowsByPeriod[period], xIndex: i }))
+      .filter(point => point.row)
+      .map(point => ({ x: point.xIndex, y: point.row.average_price_eur_per_mwh, period: point.row.period }));
+    svg.appendChild(svgEl("path", { d: pathLine(points, x, y), fill: "none", stroke: item.color, "stroke-width": 2.4 }));
+    points.forEach(point => {
+      const dot = svgEl("circle", { cx: x(point.x), cy: y(point.y), r: 4, fill: item.color });
+      dot.addEventListener("mousemove", e => showTip(e, `<b>${item.country} ${point.period}</b><br>Annual baseload price: ${fmt2.format(point.y)} EUR/MWh`));
+      dot.addEventListener("mouseleave", hideTip);
+      svg.appendChild(dot);
+    });
+  });
+  document.getElementById("comparisonPriceLegend").innerHTML = items.map(item => `<span><span class="swatch" style="background:${item.color}"></span>${item.country}</span>`).join("");
+}
+
+function renderComparisonGeneration(items) {
+  const svg = document.getElementById("comparisonGenerationChart"); clear(svg);
+  const { width, height, margin } = dims(svg);
+  const carriers = ["solar", "wind", "gas", "load_shedding"];
+  if (!items.length) {
+    addEmpty(svg, "No selected regions have data for this climate year.");
+    document.getElementById("comparisonGenerationLegend").innerHTML = "";
+    return;
+  }
+  const bars = [];
+  items.forEach(item => {
+    const periods = [...new Set((item.data.generationShares || []).map(row => row.period))]
+      .sort((a, b) => Number(a) - Number(b));
+    periods.forEach(period => bars.push({ country: item.country, period, data: item.data }));
+  });
+  if (!bars.length) {
+    addEmpty(svg, "No generation-share data is available.");
+    document.getElementById("comparisonGenerationLegend").innerHTML = "";
+    return;
+  }
+  const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
+  const y = scale(0, 100, margin.top + plotH, margin.top);
+  addYAxis(svg, margin.left, y, 100, margin.top, margin.top + plotH, v => `${fmt0.format(v)}%`, "Share");
+  const band = plotW / bars.length;
+  bars.forEach((bar, i) => {
+    const rows = bar.data.generationShares || [];
+    let y0 = 0;
+    carriers.forEach(carrier => {
+      const row = rows.find(item => item.period === bar.period && item.carrier === carrier);
+      const value = row ? row.share : 0;
+      const rectY = y(y0 + value), rectH = y(y0) - y(y0 + value);
+      const rect = svgEl("rect", {
+        x: margin.left + i * band + band * 0.18,
+        y: rectY,
+        width: band * 0.64,
+        height: Math.max(rectH, 0),
+        fill: COLORS[carrier],
+        rx: 2
+      });
+      const energy = row ? row.energy_twh : 0;
+      rect.addEventListener("mousemove", e => showTip(e, `<b>${bar.country} ${bar.period}</b><br>${generationShareLabel(carrier)}: ${fmt1.format(value)}%<br>${fmt2.format(energy)} TWh`));
+      rect.addEventListener("mouseleave", hideTip);
+      svg.appendChild(rect);
+      y0 += value;
+    });
+    const text = svgEl("text", { x: margin.left + i * band + band / 2, y: height - 12, "text-anchor": "middle", class: "tick" });
+    text.textContent = `${bar.country} ${bar.period}`;
+    svg.appendChild(text);
+  });
+  document.getElementById("comparisonGenerationLegend").innerHTML = carriers.map(carrier => `<span><span class="swatch" style="background:${COLORS[carrier]}"></span>${generationShareLabel(carrier)}</span>`).join("");
+}
+
+function renderComparison() {
+  const items = comparisonDatasets();
+  renderComparisonPrices(items);
+  renderComparisonGeneration(items);
+}
+
 function renderWeek() {
   const period = document.getElementById("weekPeriod").value;
   const start = document.getElementById("weekStart").value;
@@ -1000,11 +1244,16 @@ function renderAll() {
   );
 }
 
+initTabs();
 initCountryControl();
+initComparisonControls();
 initControls();
 renderModelSummary();
 renderAll();
-window.addEventListener("resize", renderAll);
+window.addEventListener("resize", () => {
+  renderAll();
+  if (!document.getElementById("comparePanel").hidden) renderComparison();
+});
 </script>
 </body>
 </html>
