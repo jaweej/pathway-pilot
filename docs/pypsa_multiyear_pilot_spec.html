@@ -267,7 +267,8 @@
 │  ├─ build_pecd_capacity_factors.py
 │  ├─ build_techcat_gas_turbine_simple_cycle_large.py
 │  ├─ build_techcat_wind_solar.py
-│  └─ build_tyndp_demand_profiles.py
+│  ├─ build_tyndp_demand_profiles.py
+│  └─ run_pypsa_model.py
 ├─ src/
 │  └─ pathway_pilot/
 │     ├─ __init__.py
@@ -275,6 +276,7 @@
 │     ├─ demand.py
 │     ├─ model_config.py
 │     ├─ model_inputs.py
+│     ├─ outputs.py
 │     ├─ pecd.py
 │     ├─ technology_data.py
 │     ├─ build_network.py
@@ -282,6 +284,7 @@
 └─ tests/
    ├─ test_model_config.py
    ├─ test_model_inputs.py
+   ├─ test_outputs.py
    ├─ test_demand.py
    ├─ test_technology_data.py
    ├─ test_build_network.py
@@ -347,7 +350,9 @@ discount_rate: 0.04
 
 currency: "EUR"
 
-gas_price_eur_per_mwh_fuel:
+eurdkk: 7.47
+
+gas_price_dkk_per_gj_fuel:
   2030: 80
   2040: 85
   2050: 85
@@ -362,10 +367,13 @@ capacity_limits_mw:
   gas_turbine: 100000</code></pre>
 
   <div class="note">
-    Placeholder gas prices above are deliberately simple. The implemented model calculates
-    gas marginal cost as gas price divided by electrical efficiency plus variable O&amp;M from
-    <code>gas_turbine_simple_cycle_large.parquet</code>. Annualised capital cost is derived from
-    TechCat investment cost, fixed O&amp;M, lifetime and <code>discount_rate</code>.
+    All model costs and outputs are in EUR. Gas prices are configured in DKK/GJ fuel and
+    converted to EUR/MWh fuel using <code>EUR/MWh = DKK/GJ × 3.6 / EURDKK</code>, with
+    <code>EURDKK = 7.47</code>, when loading the config.
+    The implemented model calculates gas marginal cost as converted gas price divided by
+    electrical efficiency plus variable O&amp;M from
+    <code>gas_turbine_simple_cycle_large.parquet</code>. Annualised capital cost is derived
+    from TechCat investment cost, fixed O&amp;M, lifetime and <code>discount_rate</code>.
   </div>
 </section>
 
@@ -506,7 +514,7 @@ DEV_DATA_DIR\pathway-pilot\tech\utility_scale_pv.parquet</code></pre>
     <tr><td>Demand</td><td>Sum <code>DKE1</code> and <code>DKW1</code> hourly demand by <code>target_year</code>, <code>weather_year</code> and <code>timestamp</code>.</td></tr>
     <tr><td>2050 time series</td><td>Use the same demand and capacity-factor time series as <code>2040</code>, relabelled to model period <code>2050</code>.</td></tr>
     <tr><td>Technology costs</td><td>Read wind, solar and gas costs from the prepared TechCat Parquet files in <code>DEV_DATA_DIR\pathway-pilot\tech</code>.</td></tr>
-    <tr><td>Gas marginal cost</td><td>Combine configured gas prices with gas-turbine efficiency and variable O&amp;M from the gas TechCat Parquet file.</td></tr>
+    <tr><td>Gas marginal cost</td><td>Convert configured DKK/GJ gas prices to EUR/MWh fuel using <code>EUR/MWh = DKK/GJ × 3.6 / 7.47</code>, then combine with gas-turbine efficiency and variable O&amp;M from the gas TechCat Parquet file.</td></tr>
   </table>
 
   <div class="warn">
@@ -683,6 +691,19 @@ gas_turbine_2030, gas_turbine_2040, gas_turbine_2050</code></pre>
 <section>
   <h2>10. Output checks</h2>
 
+  <p>
+    Solved model outputs are written by <code>scripts/run_pypsa_model.py</code> to
+    <code>DEV_DATA_DIR\pathway-pilot\output</code>, which defaults to
+    <code>C:\Users\B510067\dev_data\pathway-pilot\output</code>.
+  </p>
+
+  <table>
+    <tr><th>File</th><th>Contents</th></tr>
+    <tr><td><code>optimal_capacities.parquet</code></td><td>One row per generator with carrier, build year, lifetime, optimal capacity, capital cost and marginal cost.</td></tr>
+    <tr><td><code>hourly_dispatch.parquet</code></td><td>Long-form hourly generator dispatch by period, timestamp and generator.</td></tr>
+    <tr><td><code>hourly_prices.parquet</code></td><td>Long-form hourly bus marginal prices by period and timestamp.</td></tr>
+  </table>
+
   <table>
     <tr><th>Output</th><th>Check</th></tr>
     <tr><td>Installed capacity by technology and build year</td><td>Does investment timing make sense?</td></tr>
@@ -709,7 +730,7 @@ gas_turbine_2030, gas_turbine_2040, gas_turbine_2050</code></pre>
     <tr><td>M1: Config + synthetic data</td><td>Tests pass; 3 × 8760 rows for demand and CFs.</td></tr>
     <tr><td>M2: Network builds</td><td>PyPSA network has multi-period snapshots and expected components.</td></tr>
     <tr><td>M3: HiGHS solve</td><td>Tiny-fixture smoke test returns optimal solution; full-year solve remains manual/integration only.</td></tr>
-    <tr><td>M4: Basic outputs</td><td>CSV summary and 2–3 plots generated.</td></tr>
+    <tr><td>M4: Basic outputs</td><td>Optimal capacities, hourly dispatch and hourly prices are saved to <code>DEV_DATA_DIR\pathway-pilot\output</code>.</td></tr>
     <tr><td>M5: Replace synthetic inputs</td><td>Prepared PECD capacity factors, TYNDP demand, TechCat wind/solar/gas costs and configured gas prices can be loaded without code changes; DKW1 CFs, DKE1 + DKW1 demand aggregation and 2040-to-2050 reuse are covered by tests.</td></tr>
   </table>
 </section>

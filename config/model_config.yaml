@@ -7,7 +7,9 @@ period_weights:
 
 discount_rate: 0.04
 
-gas_price_eur_per_mwh_fuel:
+eurdkk: 7.47
+
+gas_price_dkk_per_gj_fuel:
   2030: 80
   2040: 85
   2050: 85

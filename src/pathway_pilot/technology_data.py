@@ -14,6 +14,7 @@ from pathway_pilot.model_config import ModelConfig
 @dataclass(frozen=True)
 class TechnologyAssumption:
     capital_cost_by_period: dict[int, float]
+    unit_capex_by_period: dict[int, float]
     marginal_cost_by_period: dict[int, float]
     lifetime_years: int
 
@@ -21,16 +22,19 @@ class TechnologyAssumption:
 FALLBACK_ASSUMPTIONS = {
     "wind": TechnologyAssumption(
         capital_cost_by_period={2030: 90_000, 2040: 85_000, 2050: 80_000},
+        unit_capex_by_period={2030: 1_100_000, 2040: 1_050_000, 2050: 1_030_000},
         marginal_cost_by_period={2030: 2, 2040: 2, 2050: 2},
         lifetime_years=30,
     ),
     "solar": TechnologyAssumption(
         capital_cost_by_period={2030: 35_000, 2040: 30_000, 2050: 28_000},
+        unit_capex_by_period={2030: 380_000, 2040: 320_000, 2050: 290_000},
         marginal_cost_by_period={2030: 0, 2040: 0, 2050: 0},
         lifetime_years=40,
     ),
     "gas_turbine": TechnologyAssumption(
         capital_cost_by_period={2030: 45_000, 2040: 43_000, 2050: 42_000},
+        unit_capex_by_period={2030: 595_000, 2040: 574_000, 2050: 553_000},
         marginal_cost_by_period={2030: 200, 2040: 205, 2050: 205},
         lifetime_years=25,
     ),
@@ -58,9 +62,13 @@ def _row_for_period(table: pd.DataFrame, period: int) -> pd.Series:
 
 def _capital_cost(row: pd.Series, discount_rate: float) -> float:
     lifetime = float(row["technical_lifetime_years"])
-    investment = float(row["total_nominal_investment_meur_per_mw_e"]) * 1_000_000
+    investment = _unit_capex(row)
     fixed_om = float(row["fixed_om_eur_per_mw_e_per_year"])
     return investment * _annuity(discount_rate, lifetime) + fixed_om
+
+
+def _unit_capex(row: pd.Series) -> float:
+    return float(row["total_nominal_investment_meur_per_mw_e"]) * 1_000_000
 
 
 def _renewable_assumption(
@@ -69,15 +77,17 @@ def _renewable_assumption(
     periods: list[int],
 ) -> TechnologyAssumption:
     capital_costs = {}
+    unit_capex = {}
     marginal_costs = {}
     for period in periods:
-        row = _row_for_period(table, 2040 if period == 2050 else period)
+        row = _row_for_period(table, period)
         capital_costs[period] = _capital_cost(row, cfg.discount_rate)
+        unit_capex[period] = _unit_capex(row)
         variable_om = row["variable_om_eur_per_mwh_e"]
         marginal_costs[period] = 0 if pd.isna(variable_om) else float(variable_om)
 
     lifetime = int(round(float(_row_for_period(table, periods[0])["technical_lifetime_years"])))
-    return TechnologyAssumption(capital_costs, marginal_costs, lifetime)
+    return TechnologyAssumption(capital_costs, unit_capex, marginal_costs, lifetime)
 
 
 def _gas_assumption(
@@ -86,16 +96,18 @@ def _gas_assumption(
     periods: list[int],
 ) -> TechnologyAssumption:
     capital_costs = {}
+    unit_capex = {}
     marginal_costs = {}
     for period in periods:
-        row = _row_for_period(table, 2040 if period == 2050 else period)
+        row = _row_for_period(table, period)
         capital_costs[period] = _capital_cost(row, cfg.discount_rate)
+        unit_capex[period] = _unit_capex(row)
         efficiency = float(row["electrical_efficiency_net_annual_avg"])
         variable_om = float(row["variable_om_eur_per_mwh_e"])
         marginal_costs[period] = cfg.gas_price_eur_per_mwh_fuel[period] / efficiency + variable_om
 
     lifetime = int(round(float(_row_for_period(table, periods[0])["technical_lifetime_years"])))
-    return TechnologyAssumption(capital_costs, marginal_costs, lifetime)
+    return TechnologyAssumption(capital_costs, unit_capex, marginal_costs, lifetime)
 
 
 def load_technology_assumptions(

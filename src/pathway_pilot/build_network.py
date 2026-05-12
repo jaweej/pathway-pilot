@@ -26,6 +26,10 @@ def _normalise_string_columns(network: pypsa.Network) -> None:
                 frame[column] = frame[column].astype("object")
 
 
+def _set_unit_capex(network: pypsa.Network, generator_name: str, value: float) -> None:
+    network.generators.loc[generator_name, "unit_capex_eur_per_mw"] = float(value)
+
+
 def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
     technology_assumptions = load_technology_assumptions(cfg)
     network = pypsa.Network()
@@ -35,7 +39,7 @@ def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
         cfg.period_weights, dtype="float64"
     )
 
-    network.add("Bus", "electricity")
+    network.add("Bus", "electricity", carrier="electricity")
     for carrier in ["electricity", "wind", "solar", "gas", "load_shedding"]:
         network.add("Carrier", carrier)
     network.add("Load", "demand", bus="electricity", p_set=data.demand_series)
@@ -59,6 +63,11 @@ def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
                 build_year=build_year,
                 lifetime=tech.lifetime_years,
             )
+            _set_unit_capex(
+                network,
+                f"{technology}_{build_year}",
+                _period_value(tech.unit_capex_by_period, build_year),
+            )
 
     gas_tech = technology_assumptions["gas_turbine"]
     for build_year in cfg.investment_periods:
@@ -74,6 +83,11 @@ def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
             build_year=build_year,
             lifetime=gas_tech.lifetime_years,
         )
+        _set_unit_capex(
+            network,
+            f"gas_turbine_{build_year}",
+            _period_value(gas_tech.unit_capex_by_period, build_year),
+        )
 
     network.add(
         "Generator",
@@ -83,6 +97,7 @@ def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
         p_nom=cfg.load_shedding_max_capacity_mw,
         marginal_cost=cfg.load_shedding_variable_cost_eur_per_mwh,
     )
+    _set_unit_capex(network, "load_shedding", 0.0)
 
     _normalise_string_columns(network)
     return network

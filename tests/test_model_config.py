@@ -8,5 +8,6 @@ def test_config_loads_period_weights():
 
     assert cfg.investment_periods == [2030, 2040, 2050]
     assert cfg.period_weights[2030] == 10
-    assert cfg.gas_price_eur_per_mwh_fuel[2050] == 85
+    assert cfg.eurdkk == 7.47
+    assert cfg.gas_price_eur_per_mwh_fuel[2050] == 85 * 3.6 / 7.47
     assert cfg.capacity_limits_mw["wind"] > 0
