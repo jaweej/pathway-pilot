@@ -1,0 +1,4 @@
+interface:
+  display_name: "Demand Series Ingest"
+  short_description: "Ingest hourly price-area demand series"
+  default_prompt: "Use $demand-series-ingest to extract hourly power demand by price area into the pathway-pilot long-form schema."

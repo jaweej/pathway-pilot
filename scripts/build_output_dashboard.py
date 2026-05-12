@@ -112,7 +112,7 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
                 "capture_rate": _round(demand_price / time_price),
             }
         )
-        for technology in ["wind", "solar"]:
+        for technology in CAPACITY_CARRIERS:
             generation = group[technology]
             capture_price = (
                 (generation * group["price_eur_per_mwh"]).sum() / generation.sum()
@@ -187,6 +187,7 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
         "security": security,
         "gasMarginalCostMax": _round(gas_marginal_cost_max),
         "capacityCarriers": CAPACITY_CARRIERS,
+        "captureTechnologies": [*CAPACITY_CARRIERS, "demand"],
         "dispatchCarriers": DISPATCH_CARRIERS,
         "weekData": week_data,
         "dateMin": min(row["timestep"][:10] for rows in week_data.values() for row in rows),
@@ -590,18 +591,20 @@ function renderCapture() {
   const { width, height, margin } = dims(svg);
   const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
   const periods = [...new Set(DATA.capture.map(r => r.period))].sort();
-  const techs = ["wind", "solar", "demand"];
+  const techs = DATA.captureTechnologies || ["wind", "solar", "gas", "gas_turbine_cc", "demand"];
   const max = Math.max(...DATA.capture.map(r => r.capture_rate), 1) * 1.15;
   const y = scale(0, max, margin.top + plotH, margin.top);
   addYAxis(svg, margin.left, y, max, margin.top, margin.top + plotH, v => fmt2.format(v), "Capture rate");
   const band = plotW / periods.length;
-  const barW = band / 5;
+  const innerW = band * 0.7;
+  const barW = innerW / techs.length;
   periods.forEach((period, i) => {
     techs.forEach((tech, j) => {
       const row = DATA.capture.find(r => r.period === period && r.technology === tech);
       const value = row ? row.capture_rate : 0;
-      const rect = svgEl("rect", { x: margin.left + i * band + band * 0.22 + j * barW, y: y(value), width: barW * 0.85, height: y(0) - y(value), fill: COLORS[tech], rx: 2 });
-      rect.addEventListener("mousemove", e => showTip(e, `<b>${period} ${tech}</b><br>Capture rate: ${fmt2.format(value)}<br>Capture price: ${fmt2.format(row.capture_price)} EUR/MWh`));
+      const rect = svgEl("rect", { x: margin.left + i * band + band * 0.15 + j * barW, y: y(value), width: barW * 0.85, height: y(0) - y(value), fill: COLORS[tech], rx: 2 });
+      const capturePrice = row ? row.capture_price : 0;
+      rect.addEventListener("mousemove", e => showTip(e, `<b>${period} ${labelFor(tech)}</b><br>Capture rate: ${fmt2.format(value)}<br>Capture price: ${fmt2.format(capturePrice)} EUR/MWh`));
       rect.addEventListener("mouseleave", hideTip);
       svg.appendChild(rect);
     });
