@@ -9,7 +9,22 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from build_output_dashboard import load_dashboard_data
+from build_output_dashboard import _highest_shedding_week, load_dashboard_data
+
+
+def test_highest_shedding_week_centers_peak_when_possible():
+    rows = pd.DataFrame(
+            {
+                "timestep": pd.date_range("2030-01-01", periods=300, freq="h"),
+                "load_shedding": [0.0] * 200 + [100.0] + [0.0] * 99,
+            }
+        )
+
+    window = _highest_shedding_week(rows)
+
+    peak_position = window.index[window["load_shedding"] > 0][0] - window.index[0]
+    assert 80 <= peak_position <= 88
+    assert len(window) == 168
 
 
 def test_dashboard_loads_combined_model_regions_and_interconnector_flows():
@@ -121,6 +136,14 @@ def test_dashboard_loads_combined_model_regions_and_interconnector_flows():
             "DK": {"demand_zones": ["DKE1", "DKW1"], "capacity_factor_zone": "DKW1"},
             "NL": {"demand_zones": ["NL00"], "capacity_factor_zone": "NL00"},
         },
+        "interconnectors": [
+            {
+                "name": "DK_NL_interconnector",
+                "bus0": "DK",
+                "bus1": "NL",
+                "capacity_mw": 1000,
+            }
+        ],
     }
 
     capacities.to_parquet(output_path / "optimal_capacities.parquet", index=False)
@@ -129,17 +152,26 @@ def test_dashboard_loads_combined_model_regions_and_interconnector_flows():
     flows.to_parquet(output_path / "hourly_interconnector_flows.parquet", index=False)
     (output_path / "model_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
 
-    data = load_dashboard_data(output_path)
+    compact_data = load_dashboard_data(output_path)
+    data = load_dashboard_data(output_path, compact_week_data=False)
 
     assert sorted(data["regions"]) == ["DK", "NL"]
+    assert compact_data["regions"]["DK"]["weekDataMode"] == "compact"
+    assert set(compact_data["regions"]["DK"]["weekData"]["2030"]) == {"winter", "summer", "shed"}
     dk_week = data["regions"]["DK"]["weekData"]["2030"]
     nl_week = data["regions"]["NL"]["weekData"]["2030"]
-    assert data["regions"]["DK"]["dispatchCarriers"][-2:] == [
+    assert data["regions"]["DK"]["dispatchCarriers"][-3:] == [
         "interconnector_import",
         "interconnector_export",
+        "load_shedding",
     ]
     assert dk_week[0]["interconnector_export"] == -10
     assert dk_week[1]["interconnector_import"] == 5
     assert nl_week[0]["interconnector_import"] == 10
     assert nl_week[1]["interconnector_export"] == -5
+    assert data["regions"]["DK"]["security"][0]["import_twh"] == 0.0
+    assert data["regions"]["DK"]["security"][0]["export_twh"] == 0.0
+    assert data["regions"]["NL"]["security"][0]["import_twh"] == 0.0
+    assert data["regions"]["NL"]["security"][0]["export_twh"] == 0.0
+    assert data["regions"]["DK"]["security"][0]["interconnector_utilisation_pct"] == 0.75
     shutil.rmtree(output_path)

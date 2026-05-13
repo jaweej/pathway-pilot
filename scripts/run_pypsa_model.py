@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime
 import json
 from pathlib import Path
+import shutil
 import sys
 from time import perf_counter
 
@@ -16,6 +17,9 @@ from pathway_pilot.model_config import ModelConfig, load_config, with_active_mod
 from pathway_pilot.model_inputs import build_model_inputs
 from pathway_pilot.outputs import write_model_outputs
 from pathway_pilot.solve import solve_model
+
+
+STAGING_ROOT = Path(".tmp") / "model_outputs"
 
 
 def scenario_output_dir(
@@ -45,6 +49,11 @@ def run_model_case(
 ) -> None:
     run_started_at = datetime.now().astimezone()
     solve_start = perf_counter()
+    output_root = DEV_DATA_DIR / "pathway-pilot" / "output"
+    staged_output_dir = staged_output_dir_for(output_dir, output_root)
+    if staged_output_dir.exists():
+        shutil.rmtree(staged_output_dir)
+    staged_output_dir.mkdir(parents=True, exist_ok=True)
 
     data = build_model_inputs(
         capacity_factors=capacity_factors,
@@ -60,8 +69,7 @@ def run_model_case(
     if (status, condition) != ("ok", "optimal"):
         raise RuntimeError(f"PyPSA solve failed: status={status}, condition={condition}")
 
-    write_model_outputs(network, output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    write_model_outputs(network, staged_output_dir)
     metadata = {
         "active_model": cfg.active_model,
         "demand_zones": list(cfg.demand_zones),
@@ -85,17 +93,41 @@ def run_model_case(
         "weather_year": weather_year,
         "run_at": run_started_at.isoformat(),
     }
-    (output_dir / "model_metadata.json").write_text(
+    (staged_output_dir / "model_metadata.json").write_text(
         json.dumps(metadata, indent=2),
         encoding="utf-8",
     )
-    with (output_dir / "solve_times.txt").open("a", encoding="utf-8") as handle:
+    with (staged_output_dir / "solve_times.txt").open("a", encoding="utf-8") as handle:
         handle.write(
             f"run_at: {run_started_at.isoformat()}, "
             f"run_time_secs: {run_time_seconds:.3f}\n"
         )
-    print(f"Wrote {cfg.active_model} weather {weather_year} model outputs to {output_dir}")
+    copied_to_output = copy_output_bundle(staged_output_dir, output_dir)
+    print(f"Wrote staged outputs to {staged_output_dir.resolve()}")
+    if copied_to_output:
+        print(f"Copied {cfg.active_model} weather {weather_year} model outputs to {output_dir}")
     print(f"Solve run time: {run_time_seconds:.3f} seconds")
+
+
+def copy_output_bundle(staged_output_dir: Path, output_dir: Path) -> bool:
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for path in staged_output_dir.iterdir():
+            if path.is_file():
+                shutil.copy2(path, output_dir / path.name)
+        return True
+    except OSError as exc:
+        print(f"Could not copy staged outputs to {output_dir}: {exc}")
+        print(f"Staged outputs are preserved at {staged_output_dir.resolve()}")
+        return False
+
+
+def staged_output_dir_for(output_dir: Path, output_root: Path) -> Path:
+    try:
+        relative = output_dir.relative_to(output_root)
+    except ValueError:
+        relative = Path(output_dir.name)
+    return STAGING_ROOT / relative
 
 
 def parse_args() -> argparse.Namespace:

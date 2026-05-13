@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import json
 import sys
@@ -9,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pandas as pd
 
 from pathway_pilot.config import DEV_DATA_DIR
+from pathway_pilot.model_config import load_config
 
 
 OUTPUT_DIR = DEV_DATA_DIR / "pathway-pilot" / "output"
@@ -16,6 +18,7 @@ DASHBOARD_PATH = OUTPUT_DIR / "pypsa_output_dashboard.html"
 CAPACITY_CARRIERS = ["gas_turbine_cc", "gas", "wind", "solar"]
 DISPATCH_CARRIERS = [*CAPACITY_CARRIERS, "load_shedding"]
 GAS_CARRIERS = ["gas", "gas_turbine_cc"]
+CONFIG_PATH = Path("config/model_config.yaml")
 
 
 def _round(value: float, digits: int = 3) -> float:
@@ -83,6 +86,97 @@ def _regional_imports(flows: pd.DataFrame | None, region: str) -> pd.DataFrame |
     return pd.DataFrame(rows).groupby(["period", "timestep"], as_index=False)["import_mw"].sum()
 
 
+WEEK_COLUMNS = [
+    "timestep",
+    "demand",
+    "wind",
+    "solar",
+    "gas",
+    "gas_turbine_cc",
+    "load_shedding",
+    "interconnector_import",
+    "interconnector_export",
+    "price_eur_per_mwh",
+]
+
+
+def _week_window(rows: pd.DataFrame, start_index: int, window_size: int = 168) -> pd.DataFrame:
+    if rows.empty:
+        return rows
+    start_index = max(0, min(start_index, max(len(rows) - window_size, 0)))
+    return rows.iloc[start_index : start_index + window_size]
+
+
+def _fixed_week(rows: pd.DataFrame, month_day: str) -> pd.DataFrame:
+    if rows.empty:
+        return rows
+    year = rows.iloc[0]["timestep"].year
+    target = pd.Timestamp(f"{year}-{month_day}")
+    matches = rows.index[rows["timestep"] >= target]
+    start_index = int(matches[0]) if len(matches) else max(len(rows) - 168, 0)
+    return _week_window(rows, start_index)
+
+
+def _highest_shedding_week(rows: pd.DataFrame) -> pd.DataFrame:
+    if rows.empty:
+        return rows
+    window_size = 168
+    if len(rows) <= window_size:
+        return rows
+    shed = rows["load_shedding"].clip(lower=0)
+    positive = shed > 1e-6
+    if not positive.any():
+        return _week_window(rows, 0)
+    groups = positive.ne(positive.shift()).cumsum()
+    best_episode = None
+    best_energy = 0.0
+    for _, episode in shed[positive].groupby(groups[positive]):
+        energy = float(episode.sum())
+        if energy > best_energy:
+            best_energy = energy
+            best_episode = episode
+    if best_episode is None or best_energy <= 1e-6:
+        return _week_window(rows, 0)
+    episode_center = float((best_episode.index.to_series() * best_episode).sum() / best_energy)
+    start_index = round(episode_center - (window_size - 1) / 2)
+    return _week_window(rows, start_index)
+
+
+def _week_label(rows: pd.DataFrame) -> str:
+    if rows.empty:
+        return ""
+    start = rows.iloc[0]["timestep"].strftime("%Y-%m-%d")
+    end = rows.iloc[-1]["timestep"].strftime("%Y-%m-%d")
+    return f"{start} to {end}"
+
+
+def _build_week_data(hourly: pd.DataFrame, compact_week_data: bool) -> tuple[dict, str | None, str | None]:
+    week_data = {}
+    date_min = None
+    date_max = None
+    for period, group in hourly.groupby("period"):
+        ordered = group.sort_values("timestep").reset_index(drop=True)
+        if compact_week_data:
+            windows = {
+                "winter": _fixed_week(ordered, "01-15"),
+                "summer": _fixed_week(ordered, "07-15"),
+                "shed": _highest_shedding_week(ordered),
+            }
+            week_data[str(period)] = {
+                key: {
+                    "label": _week_label(window),
+                    "rows": _series_points(window, WEEK_COLUMNS),
+                }
+                for key, window in windows.items()
+            }
+        else:
+            week_data[str(period)] = _series_points(ordered, WEEK_COLUMNS)
+            if date_min is None:
+                date_min = ordered.iloc[0]["timestep"].strftime("%Y-%m-%d")
+            date_max = ordered.iloc[-1]["timestep"].strftime("%Y-%m-%d")
+    return week_data, date_min, date_max
+
+
 def _dashboard_payload(
     capacities: pd.DataFrame,
     dispatch: pd.DataFrame,
@@ -90,8 +184,15 @@ def _dashboard_payload(
     metadata: dict,
     region: str | None = None,
     flows: pd.DataFrame | None = None,
+    compact_week_data: bool = True,
 ) -> dict:
     regions = set((metadata.get("model_regions") or {}).keys())
+    interconnector_capacity_mw = sum(
+        float(interconnector.get("capacity_mw", 0.0))
+        for interconnector in metadata.get("interconnectors", [])
+        if region is not None
+        and region in {interconnector.get("bus0"), interconnector.get("bus1")}
+    )
     if region is not None:
         capacities = _regional_capacities(capacities, region, regions)
         dispatch = _regional_dispatch(dispatch, region, regions)
@@ -123,9 +224,10 @@ def _dashboard_payload(
     preferred_bus = region or ("electricity" if "electricity" in set(prices["bus"]) else prices["bus"].iloc[0])
     prices = prices[prices["bus"] == preferred_bus].drop(columns=["bus"])
     hourly = dispatch_wide.merge(prices, on=["period", "timestep"], how="left")
-    dispatch_carriers = [*DISPATCH_CARRIERS]
+    dispatch_carriers = [*CAPACITY_CARRIERS]
     if region is not None and imports is not None:
         dispatch_carriers.extend(["interconnector_import", "interconnector_export"])
+    dispatch_carriers.append("load_shedding")
 
     capacity_rows = capacities.copy()
     capacity_rows["p_nom_opt_mw"] = capacity_rows["p_nom_opt_mw"].clip(lower=0)
@@ -202,24 +304,7 @@ def _dashboard_payload(
                 }
             )
 
-    week_data = {}
-    for period, group in hourly.groupby("period"):
-        ordered = group.sort_values("timestep")
-        week_data[str(period)] = _series_points(
-            ordered,
-            [
-                "timestep",
-                "demand",
-                "wind",
-                "solar",
-                "gas",
-                "gas_turbine_cc",
-                "load_shedding",
-                "interconnector_import",
-                "interconnector_export",
-                "price_eur_per_mwh",
-            ],
-        )
+    week_data, date_min, date_max = _build_week_data(hourly, compact_week_data)
 
     summary = []
     security = []
@@ -229,6 +314,9 @@ def _dashboard_payload(
         shed_hours = int((shed > 1e-6).sum())
         shed_energy_mwh = float(shed.sum())
         demand_energy_mwh = float(group["demand"].sum())
+        import_energy_mwh = float(group["interconnector_import"].clip(lower=0).sum())
+        export_energy_mwh = float((-group["interconnector_export"].clip(upper=0)).sum())
+        total_interconnector_capacity_mwh = interconnector_capacity_mw * len(group)
         generation_totals = {
             "gas_turbine_cc": float(group["gas_turbine_cc"].clip(lower=0).sum()),
             "gas": float(group["gas"].clip(lower=0).sum()),
@@ -267,6 +355,16 @@ def _dashboard_payload(
                 ),
                 "peak_shed_mw": _round(shed.max(), 4),
                 "gas_generation_twh": _round(group[GAS_CARRIERS].sum(axis=1).sum() / 1_000_000, 3),
+                "import_twh": _round(import_energy_mwh / 1_000_000, 3),
+                "export_twh": _round(export_energy_mwh / 1_000_000, 3),
+                "interconnector_utilisation_pct": _round(
+                    100
+                    * (import_energy_mwh + export_energy_mwh)
+                    / total_interconnector_capacity_mwh
+                    if total_interconnector_capacity_mwh
+                    else 0,
+                    3,
+                ),
                 "voll_eur_per_mwh": _round(
                     capacities.loc[
                         capacities["carrier"] == "load_shedding", "marginal_cost"
@@ -297,13 +395,14 @@ def _dashboard_payload(
         "captureTechnologies": [*CAPACITY_CARRIERS, "demand"],
         "dispatchCarriers": dispatch_carriers,
         "weekData": week_data,
-        "dateMin": min(row["timestep"][:10] for rows in week_data.values() for row in rows),
-        "dateMax": max(row["timestep"][:10] for rows in week_data.values() for row in rows),
+        "weekDataMode": "compact" if compact_week_data else "full",
+        "dateMin": date_min,
+        "dateMax": date_max,
         "metadata": {**metadata, "selected_region": region},
     }
 
 
-def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
+def load_dashboard_data(output_dir: Path = OUTPUT_DIR, compact_week_data: bool = True) -> dict:
     capacities = pd.read_parquet(output_dir / "optimal_capacities.parquet")
     dispatch = pd.read_parquet(output_dir / "hourly_dispatch.parquet")
     prices = pd.read_parquet(output_dir / "hourly_prices.parquet")
@@ -320,7 +419,14 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
             "weather_year": 1982,
         }
     )
-    data = _dashboard_payload(capacities, dispatch, prices, metadata, flows=flows)
+    data = _dashboard_payload(
+        capacities,
+        dispatch,
+        prices,
+        metadata,
+        flows=flows,
+        compact_week_data=compact_week_data,
+    )
     model_regions = metadata.get("model_regions") or {}
     if len(model_regions) > 1:
         data["regions"] = {
@@ -331,6 +437,7 @@ def load_dashboard_data(output_dir: Path = OUTPUT_DIR) -> dict:
                 metadata,
                 region=region,
                 flows=flows,
+                compact_week_data=compact_week_data,
             )
             for region in model_regions
         }
@@ -349,11 +456,251 @@ def has_output_tables(path: Path) -> bool:
     )
 
 
-def load_dashboard_bundle(output_dir: Path = OUTPUT_DIR) -> dict:
+def _load_period_weights() -> dict[int, float]:
+    try:
+        cfg = load_config(CONFIG_PATH)
+    except (FileNotFoundError, KeyError, ValueError):
+        return {}
+    return {int(period): float(weight) for period, weight in cfg.period_weights.items()}
+
+
+def _period_weight(period: int, period_weights: dict[int, float]) -> float:
+    return float(period_weights.get(int(period), 1.0))
+
+
+def _scenario_frames(scenario_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    capacities = pd.read_parquet(scenario_dir / "optimal_capacities.parquet")
+    dispatch = pd.read_parquet(scenario_dir / "hourly_dispatch.parquet")
+    prices = pd.read_parquet(scenario_dir / "hourly_prices.parquet")
+    flows_path = scenario_dir / "hourly_interconnector_flows.parquet"
+    flows = pd.read_parquet(flows_path) if flows_path.exists() else pd.DataFrame()
+    metadata_path = scenario_dir / "model_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
+    return capacities, dispatch, prices, flows, metadata
+
+
+def _regional_demand_from_dispatch(
+    dispatch: pd.DataFrame,
+    flows: pd.DataFrame,
+    region: str,
+    regions: set[str],
+) -> pd.DataFrame:
+    regional_dispatch = _regional_dispatch(dispatch, region, regions)
+    generation = regional_dispatch.groupby(["period", "timestep"], as_index=False)[
+        "dispatch_mw"
+    ].sum()
+    generation = generation.rename(columns={"dispatch_mw": "generation_mw"})
+    imports = _regional_imports(flows, region)
+    if imports is None:
+        generation["import_mw"] = 0.0
+    else:
+        generation = generation.merge(imports, on=["period", "timestep"], how="left")
+        generation["import_mw"] = generation["import_mw"].fillna(0.0)
+    generation["demand_mw"] = generation["generation_mw"] + generation["import_mw"]
+    return generation[["period", "timestep", "demand_mw"]]
+
+
+def _consumer_surplus_proxy(
+    dispatch: pd.DataFrame,
+    prices: pd.DataFrame,
+    flows: pd.DataFrame,
+    region: str,
+    regions: set[str],
+    period_weights: dict[int, float],
+) -> dict[int, float]:
+    demand = _regional_demand_from_dispatch(dispatch, flows, region, regions)
+    regional_prices = prices[prices["bus"] == region][
+        ["period", "timestep", "price_eur_per_mwh"]
+    ]
+    frame = demand.merge(regional_prices, on=["period", "timestep"], how="left")
+    frame["weight"] = frame["period"].map(lambda period: _period_weight(period, period_weights))
+    frame["value"] = -(frame["demand_mw"] * frame["price_eur_per_mwh"] * frame["weight"])
+    return {int(period): float(group["value"].sum()) for period, group in frame.groupby("period")}
+
+
+def _producer_surplus(
+    capacities: pd.DataFrame,
+    dispatch: pd.DataFrame,
+    prices: pd.DataFrame,
+    region: str,
+    regions: set[str],
+    period_weights: dict[int, float],
+) -> dict[int, float]:
+    regional_dispatch = _regional_dispatch(dispatch, region, regions)
+    generator_costs = capacities[["generator", "marginal_cost"]]
+    regional_dispatch = regional_dispatch.merge(generator_costs, on="generator", how="left")
+    regional_prices = prices[prices["bus"] == region][
+        ["period", "timestep", "price_eur_per_mwh"]
+    ]
+    frame = regional_dispatch.merge(regional_prices, on=["period", "timestep"], how="left")
+    frame["weight"] = frame["period"].map(lambda period: _period_weight(period, period_weights))
+    frame["revenue"] = frame["dispatch_mw"] * frame["price_eur_per_mwh"] * frame["weight"]
+    frame["variable_cost"] = frame["dispatch_mw"] * frame["marginal_cost"] * frame["weight"]
+    values = (frame["revenue"] - frame["variable_cost"]).groupby(frame["period"]).sum().to_dict()
+
+    regional_capacities = _regional_capacities(capacities, region, regions)
+    for row in regional_capacities.itertuples(index=False):
+        if row.carrier == "load_shedding":
+            continue
+        for period, weight in period_weights.items():
+            if row.build_year <= period < row.build_year + row.lifetime:
+                values[period] = values.get(period, 0.0) - (
+                    float(row.p_nom_opt_mw) * float(row.capital_cost) * weight
+                )
+
+    return {int(period): float(value) for period, value in values.items()}
+
+
+def _congestion_rents(
+    flows: pd.DataFrame,
+    prices: pd.DataFrame,
+    regions: set[str],
+    period_weights: dict[int, float],
+) -> dict[str, dict[int, float]]:
+    rents = {region: {} for region in regions}
+    if flows.empty:
+        return rents
+    price_wide = prices.pivot(index=["period", "timestep"], columns="bus", values="price_eur_per_mwh")
+    frame = flows.merge(price_wide.reset_index(), on=["period", "timestep"], how="left")
+    for row in frame.itertuples(index=False):
+        if row.bus0 not in regions or row.bus1 not in regions:
+            continue
+        price0 = float(getattr(row, row.bus0))
+        price1 = float(getattr(row, row.bus1))
+        weight = _period_weight(row.period, period_weights)
+        rent = (price1 - price0) * float(row.flow_bus0_to_bus1_mw) * weight
+        period = int(row.period)
+        rents[row.bus0][period] = rents[row.bus0].get(period, 0.0) + rent / 2
+        rents[row.bus1][period] = rents[row.bus1].get(period, 0.0) + rent / 2
+    return rents
+
+
+def _welfare_components(scenario_dir: Path, period_weights: dict[int, float]) -> dict[str, dict[int, dict[str, float]]]:
+    capacities, dispatch, prices, flows, metadata = _scenario_frames(scenario_dir)
+    regions = set((metadata.get("model_regions") or {}).keys())
+    congestion = _congestion_rents(flows, prices, regions, period_weights)
+    components = {}
+    for region in sorted(regions):
+        consumer = _consumer_surplus_proxy(dispatch, prices, flows, region, regions, period_weights)
+        producer = _producer_surplus(capacities, dispatch, prices, region, regions, period_weights)
+        periods = sorted(set(consumer) | set(producer) | set(congestion.get(region, {})))
+        components[region] = {
+            int(period): {
+                "consumer_surplus": consumer.get(period, 0.0),
+                "producer_surplus": producer.get(period, 0.0),
+                "congestion_rent": congestion.get(region, {}).get(period, 0.0),
+            }
+            for period in periods
+        }
+    return components
+
+
+def _find_scenario_dir(
+    output_dir: Path,
+    scenario_name: str,
+    weather_year: int,
+    climate_year_count: int,
+) -> Path:
+    return scenario_output_dir(output_dir, scenario_name, weather_year, climate_year_count)
+
+
+def scenario_output_dir(
+    output_root: Path,
+    model_case: str,
+    weather_year: int,
+    climate_year_count: int,
+) -> Path:
+    if climate_year_count == 1:
+        return output_root / model_case
+    return output_root / model_case / f"weather_{weather_year}"
+
+
+def load_welfare_effects(output_dir: Path = OUTPUT_DIR) -> list[dict]:
+    period_weights = _load_period_weights()
+    effects = []
+    scenario_dirs = [
+        path
+        for model_dir in sorted(path for path in output_dir.iterdir() if path.is_dir())
+        for path in (
+            sorted(model_dir.iterdir())
+            if any(child.is_dir() for child in model_dir.iterdir())
+            else [model_dir]
+        )
+        if path.is_dir() and has_output_tables(path)
+    ]
+    for forced_dir in scenario_dirs:
+        metadata_path = forced_dir / "model_metadata.json"
+        if not metadata_path.exists():
+            continue
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        forced_capacity = metadata.get("forced_capacity")
+        base_model_case = metadata.get("base_model_case")
+        weather_year = metadata.get("weather_year")
+        if not forced_capacity or not base_model_case or weather_year is None:
+            continue
+        base_dir = Path(forced_capacity.get("base_output_dir", ""))
+        if not base_dir.exists():
+            base_dir = _find_scenario_dir(output_dir, base_model_case, int(weather_year), 3)
+        if not has_output_tables(base_dir):
+            continue
+
+        base = _welfare_components(base_dir, period_weights)
+        forced = _welfare_components(forced_dir, period_weights)
+        rows = []
+        for country in sorted(base):
+            periods = sorted(set(base[country]) | set(forced.get(country, {})))
+            for period in periods:
+                delta = {
+                    key: forced[country].get(period, {}).get(key, 0.0)
+                    - base[country].get(period, {}).get(key, 0.0)
+                    for key in ["consumer_surplus", "producer_surplus", "congestion_rent"]
+                }
+                delta["sew"] = sum(delta.values())
+                rows.append(
+                    {
+                        "country": country,
+                        "period": int(period),
+                        "consumer_surplus_meur": _round(delta["consumer_surplus"] / 1_000_000, 3),
+                        "producer_surplus_meur": _round(delta["producer_surplus"] / 1_000_000, 3),
+                        "congestion_rent_meur": _round(delta["congestion_rent"] / 1_000_000, 3),
+                        "sew_meur": _round(delta["sew"] / 1_000_000, 3),
+                    }
+                )
+        for period in sorted({row["period"] for row in rows}):
+            period_rows = [row for row in rows if row["period"] == period]
+            rows.append(
+                {
+                    "country": "Total",
+                    "period": int(period),
+                    "consumer_surplus_meur": _round(
+                        sum(row["consumer_surplus_meur"] for row in period_rows), 3
+                    ),
+                    "producer_surplus_meur": _round(
+                        sum(row["producer_surplus_meur"] for row in period_rows), 3
+                    ),
+                    "congestion_rent_meur": _round(
+                        sum(row["congestion_rent_meur"] for row in period_rows), 3
+                    ),
+                    "sew_meur": _round(sum(row["sew_meur"] for row in period_rows), 3),
+                }
+            )
+        effects.append(
+            {
+                "scenario": metadata.get("active_model", forced_dir.parent.name),
+                "baseScenario": base_model_case,
+                "weatherYear": int(weather_year),
+                "forcedCapacity": forced_capacity,
+                "rows": rows,
+            }
+        )
+    return effects
+
+
+def load_dashboard_bundle(output_dir: Path = OUTPUT_DIR, compact_week_data: bool = True) -> dict:
     datasets = {}
 
     def add_dataset(scenario_dir: Path) -> None:
-        data = load_dashboard_data(scenario_dir)
+        data = load_dashboard_data(scenario_dir, compact_week_data=compact_week_data)
         country = str(data["metadata"].get("active_model") or scenario_dir.name)
         climate_year = str(data["metadata"].get("weather_year") or scenario_dir.name)
         datasets.setdefault(country, {})[climate_year] = data
@@ -377,11 +724,13 @@ def load_dashboard_bundle(output_dir: Path = OUTPUT_DIR) -> dict:
         raise FileNotFoundError(f"No model output tables found under {output_dir}")
 
     preferred = "NL" if "NL" in datasets else sorted(datasets)[0]
-    preferred_climate = sorted(datasets[preferred], key=int)[0]
+    preferred_years = sorted(datasets[preferred], key=int)
+    preferred_climate = "2008" if "2008" in preferred_years else preferred_years[0]
     return {
         "datasets": datasets,
         "defaultCountry": preferred,
         "defaultClimateYear": preferred_climate,
+        "welfareEffects": load_welfare_effects(output_dir),
     }
 
 
@@ -555,6 +904,10 @@ HTML_TEMPLATE = r"""<!doctype html>
       font-size: 13px;
       margin-top: 8px;
     }
+    .muted-inline {
+      color: var(--muted);
+      font-size: 13px;
+    }
     .swatch {
       width: 11px;
       height: 11px;
@@ -602,6 +955,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   <div class="tabs" role="tablist" aria-label="Dashboard views">
     <button class="tab-button" id="detailsTab" type="button" role="tab" aria-selected="true" aria-controls="detailsPanel">Scenario Details</button>
     <button class="tab-button" id="compareTab" type="button" role="tab" aria-selected="false" aria-controls="comparePanel">DK/NL Comparison</button>
+    <button class="tab-button" id="welfareTab" type="button" role="tab" aria-selected="false" aria-controls="welfarePanel">SEW Effects</button>
   </div>
   <section id="detailsPanel" class="tab-panel" role="tabpanel" aria-labelledby="detailsTab">
     <div class="controls">
@@ -640,11 +994,12 @@ HTML_TEMPLATE = r"""<!doctype html>
       <div class="controls">
         <label for="weekPeriod">Model year</label>
         <select id="weekPeriod"></select>
-        <label for="weekStart">Week start</label>
+        <label id="weekStartLabel" for="weekStart">Week start</label>
         <input id="weekStart" type="date">
         <button id="winterWeek" type="button">Winter week</button>
         <button id="summerWeek" type="button">Summer week</button>
         <button id="shedWeek" type="button">Highest shedding</button>
+        <span id="weekRangeLabel" class="muted-inline"></span>
       </div>
       <svg id="weekChart"></svg>
       <div class="legend" id="weekLegend">
@@ -692,14 +1047,32 @@ HTML_TEMPLATE = r"""<!doctype html>
       </div>
     </div>
   </section>
+  <section id="welfarePanel" class="tab-panel" role="tabpanel" aria-labelledby="welfareTab" hidden>
+    <div class="controls">
+      <label for="welfareScenarioSelect">Forced scenario</label>
+      <select id="welfareScenarioSelect"></select>
+    </div>
+    <div class="grid">
+      <div class="panel wide">
+        <h2>Socio-economic Welfare Decomposition</h2>
+        <div id="welfareSummary"></div>
+      </div>
+      <div class="panel wide">
+        <h2>SEW Contributions By Country</h2>
+        <svg id="welfareChart"></svg>
+        <div class="legend" id="welfareLegend"></div>
+      </div>
+    </div>
+  </section>
 </main>
 <div class="tooltip" id="tooltip"></div>
 <script>
 const APP_DATA = __DATA__;
 const DATASETS = APP_DATA.datasets || {};
+const WELFARE_EFFECTS = APP_DATA.welfareEffects || [];
 let DATA;
 let activeWeekPreset = "shed";
-const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", gas_turbine_cc: "#00a6a6", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058", interconnector_import: "#38a3a5", interconnector_export: "#ef8354" };
+const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", gas_turbine_cc: "#00a6a6", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058", interconnector_import: "#ef8354", interconnector_export: "#ef8354", consumer_surplus: "#2f80ed", producer_surplus: "#18a058", congestion_rent: "#ef8354", sew: "#111827" };
 const YEAR_COLORS = ["#111827", "#2f80ed", "#18a058", "#c43d3d", "#7a5195"];
 const COUNTRY_COLORS = ["#111827", "#2f80ed", "#18a058", "#c43d3d", "#7a5195", "#00a6a6"];
 const LABELS = { wind: "Wind", solar: "Solar", gas: "Gas turbine", gas_turbine_cc: "Gas turbine CC", load_shedding: "Load shedding", demand: "Demand", interconnector_import: "Import", interconnector_export: "Export" };
@@ -755,7 +1128,9 @@ function refreshClimateControl(preferredYear) {
   const select = document.getElementById("climateYearSelect");
   const years = Object.keys(DATASETS[country] || {}).sort((a, b) => Number(a) - Number(b));
   select.innerHTML = years.map(year => `<option value="${year}">${year}</option>`).join("");
-  select.value = preferredYear && years.includes(String(preferredYear)) ? String(preferredYear) : years[0];
+  select.value = preferredYear && years.includes(String(preferredYear))
+    ? String(preferredYear)
+    : (years.includes("2008") ? "2008" : years[0]);
   refreshRegionControl();
 }
 
@@ -827,8 +1202,21 @@ function initComparisonControls() {
   climateSelect.innerHTML = climateYears.map(year => `<option value="${year}">${year}</option>`).join("");
   climateSelect.value = APP_DATA.defaultClimateYear && climateYears.includes(String(APP_DATA.defaultClimateYear))
     ? String(APP_DATA.defaultClimateYear)
-    : climateYears[0];
+    : (climateYears.includes("2008") ? "2008" : climateYears[0]);
   climateSelect.addEventListener("change", renderComparison);
+}
+
+function initWelfareControls() {
+  const select = document.getElementById("welfareScenarioSelect");
+  if (!WELFARE_EFFECTS.length) {
+    select.innerHTML = "";
+    return;
+  }
+  select.innerHTML = WELFARE_EFFECTS.map((effect, index) =>
+    `<option value="${index}">${effect.scenario} vs ${effect.baseScenario}, ${effect.weatherYear}</option>`
+  ).join("");
+  select.value = "0";
+  select.addEventListener("change", renderWelfare);
 }
 
 function showTip(event, html) {
@@ -888,7 +1276,8 @@ function pathLine(points, x, y) {
 function initTabs() {
   const tabs = [
     { button: document.getElementById("detailsTab"), panel: document.getElementById("detailsPanel") },
-    { button: document.getElementById("compareTab"), panel: document.getElementById("comparePanel") }
+    { button: document.getElementById("compareTab"), panel: document.getElementById("comparePanel") },
+    { button: document.getElementById("welfareTab"), panel: document.getElementById("welfarePanel") }
   ];
   tabs.forEach(tab => {
     tab.button.addEventListener("click", () => {
@@ -898,6 +1287,7 @@ function initTabs() {
         item.panel.hidden = !selected;
       });
       if (tab.panel.id === "comparePanel") renderComparison();
+      if (tab.panel.id === "welfarePanel") renderWelfare();
     });
   });
 }
@@ -909,6 +1299,9 @@ function renderSecurity() {
     eensPct: "EENS as percent of annual demand: total unserved electricity demand divided by total annual electricity demand in the simulated model year.",
     peak: "Peak shed: maximum hourly load shedding in the simulated year.",
     gas: "Total gas turbine generation: annual electricity output from simple-cycle and combined-cycle gas turbines in the simulated model year.",
+    imports: "Annual electricity imported through modelled interconnectors. This is non-zero only for regional views of combined models with interconnector flow output.",
+    exports: "Annual electricity exported through modelled interconnectors. This is non-zero only for regional views of combined models with interconnector flow output.",
+    interconnectorUtilisation: "Interconnector utilisation: annual absolute flow, imports plus exports, divided by interconnector capacity times simulated hours.",
     voll: "VoLL (Value of Lost Load): penalty cost assigned to involuntary load shedding in the optimisation, expressed in EUR/MWh."
   };
   const rows = DATA.security.map(row => `
@@ -916,12 +1309,15 @@ function renderSecurity() {
       <td>${row.period}</td>
       <td>${fmt1.format((DATA.summary.find(item => item.period === row.period)?.peak_demand_mw || 0) / 1000)} GW</td>
       <td>${fmt.format(DATA.summary.find(item => item.period === row.period)?.energy_twh || 0)} TWh</td>
-      <td><span class="metric-tip" data-tip="${definitions.lole}">${fmt0.format(row.lole_hours)} h/y</span></td>
-      <td><span class="metric-tip" data-tip="${definitions.eens}">${fmt2.format(row.eens_gwh)} GWh/y</span></td>
-      <td><span class="metric-tip" data-tip="${definitions.eensPct}">${fmt2.format(row.eens_pct_demand)}%</span></td>
-      <td><span class="metric-tip" data-tip="${definitions.peak}">${fmt1.format(row.peak_shed_mw / 1000)} GW</span></td>
-      <td><span class="metric-tip" data-tip="${definitions.gas}">${fmt2.format(row.gas_generation_twh)} TWh</span></td>
-      <td><span class="metric-tip" data-tip="${definitions.voll}">${fmt0.format(row.voll_eur_per_mwh)} EUR/MWh</span></td>
+      <td><span class="metric-tip" data-tip="${definitions.lole}">${fmt0.format(row.lole_hours)}</span></td>
+      <td><span class="metric-tip" data-tip="${definitions.eens}">${fmt2.format(row.eens_gwh)}</span></td>
+      <td><span class="metric-tip" data-tip="${definitions.eensPct}">${fmt2.format(row.eens_pct_demand)}</span></td>
+      <td><span class="metric-tip" data-tip="${definitions.peak}">${fmt1.format(row.peak_shed_mw / 1000)}</span></td>
+      <td><span class="metric-tip" data-tip="${definitions.gas}">${fmt1.format(row.gas_generation_twh)}</span></td>
+      <td><span class="metric-tip" data-tip="${definitions.imports}">${fmt1.format(row.import_twh || 0)}</span></td>
+      <td><span class="metric-tip" data-tip="${definitions.exports}">${fmt1.format(row.export_twh || 0)}</span></td>
+      <td><span class="metric-tip" data-tip="${definitions.interconnectorUtilisation}">${fmt1.format(row.interconnector_utilisation_pct || 0)}</span></td>
+      <td><span class="metric-tip" data-tip="${definitions.voll}">${fmt0.format(row.voll_eur_per_mwh)}</span></td>
     </tr>
   `).join("");
   document.getElementById("securityTable").innerHTML = `
@@ -936,7 +1332,24 @@ function renderSecurity() {
           <th><span class="metric-tip" data-tip="${definitions.eensPct}">EENS / demand</span></th>
           <th><span class="metric-tip" data-tip="${definitions.peak}">Peak shed</span></th>
           <th><span class="metric-tip" data-tip="${definitions.gas}">Gas generation</span></th>
+          <th><span class="metric-tip" data-tip="${definitions.imports}">Import</span></th>
+          <th><span class="metric-tip" data-tip="${definitions.exports}">Export</span></th>
+          <th><span class="metric-tip" data-tip="${definitions.interconnectorUtilisation}">Interconnector utilisation</span></th>
           <th><span class="metric-tip" data-tip="${definitions.voll}">VoLL</span></th>
+        </tr>
+        <tr>
+          <th></th>
+          <th>GW</th>
+          <th>TWh/y</th>
+          <th>h/y</th>
+          <th>GWh/y</th>
+          <th>%</th>
+          <th>GW</th>
+          <th>TWh/y</th>
+          <th>TWh/y</th>
+          <th>TWh/y</th>
+          <th>%</th>
+          <th>EUR/MWh</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -1227,10 +1640,167 @@ function renderComparison() {
   renderComparisonGeneration(items);
 }
 
+function selectedWelfareEffect() {
+  const select = document.getElementById("welfareScenarioSelect");
+  const index = Number(select.value || 0);
+  return WELFARE_EFFECTS[index];
+}
+
+function renderWelfareTable(effect) {
+  const container = document.getElementById("welfareSummary");
+  if (!effect) {
+    container.innerHTML = `<div class="empty">No forced-capacity welfare comparison is available.</div>`;
+    return;
+  }
+  const forced = effect.forcedCapacity || {};
+  const totalsByCountry = new Map();
+  (effect.rows || []).filter(row => row.country !== "Total").forEach(row => {
+    if (!totalsByCountry.has(row.country)) {
+      totalsByCountry.set(row.country, {
+        country: row.country,
+        consumer_surplus_meur: 0,
+        producer_surplus_meur: 0,
+        congestion_rent_meur: 0,
+        sew_meur: 0
+      });
+    }
+    const total = totalsByCountry.get(row.country);
+    total.consumer_surplus_meur += row.consumer_surplus_meur || 0;
+    total.producer_surplus_meur += row.producer_surplus_meur || 0;
+    total.congestion_rent_meur += row.congestion_rent_meur || 0;
+    total.sew_meur += row.sew_meur || 0;
+  });
+  const tableRows = [...totalsByCountry.values()];
+  if (tableRows.length) {
+    tableRows.push({
+      country: "Grand total",
+      consumer_surplus_meur: tableRows.reduce((sum, row) => sum + row.consumer_surplus_meur, 0),
+      producer_surplus_meur: tableRows.reduce((sum, row) => sum + row.producer_surplus_meur, 0),
+      congestion_rent_meur: tableRows.reduce((sum, row) => sum + row.congestion_rent_meur, 0),
+      sew_meur: tableRows.reduce((sum, row) => sum + row.sew_meur, 0)
+    });
+  }
+  const rows = tableRows.map(row => `
+    <tr>
+      <td>${row.country}</td>
+      <td>${fmt1.format(row.consumer_surplus_meur)}</td>
+      <td>${fmt1.format(row.producer_surplus_meur)}</td>
+      <td>${fmt1.format(row.congestion_rent_meur)}</td>
+      <td>${fmt1.format(row.sew_meur)}</td>
+    </tr>
+  `).join("");
+  container.innerHTML = `
+    <p class="muted-inline">
+      ${effect.scenario} vs ${effect.baseScenario}, weather year ${effect.weatherYear}.
+      Forced ${forced.generator || "capacity"} from ${fmt1.format(forced.base_capacity_mw || 0)} MW
+      to ${fmt1.format(forced.forced_capacity_mw || 0)} MW.
+    </p>
+    <table class="security-table">
+      <thead>
+        <tr>
+          <th>Country</th>
+          <th>Consumer surplus</th>
+          <th>Producer surplus</th>
+          <th>Congestion rent</th>
+          <th>Net SEW</th>
+        </tr>
+        <tr>
+          <th></th>
+          <th>MEUR</th>
+          <th>MEUR</th>
+          <th>MEUR</th>
+          <th>MEUR</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderWelfareChart(effect) {
+  const svg = document.getElementById("welfareChart"); clear(svg);
+  const legend = document.getElementById("welfareLegend");
+  if (!effect || !(effect.rows || []).length) {
+    addEmpty(svg, "No welfare data is available.");
+    legend.innerHTML = "";
+    return;
+  }
+  const rows = effect.rows.filter(row => row.country !== "Total");
+  const components = [
+    { key: "consumer_surplus_meur", colorKey: "consumer_surplus", label: "Consumer surplus" },
+    { key: "producer_surplus_meur", colorKey: "producer_surplus", label: "Producer surplus" },
+    { key: "congestion_rent_meur", colorKey: "congestion_rent", label: "Congestion rent" }
+  ];
+  const { width, height, margin } = dims(svg);
+  const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
+  const positives = rows.map(row => components.reduce((sum, component) => sum + Math.max(row[component.key] || 0, 0), 0));
+  const negatives = rows.map(row => components.reduce((sum, component) => sum + Math.min(row[component.key] || 0, 0), 0));
+  const dots = rows.map(row => row.sew_meur || 0);
+  const maxY = Math.max(...positives, ...dots, 1) * 1.15;
+  const minY = Math.min(...negatives, ...dots, 0) * 1.15;
+  const y = scale(minY, maxY, margin.top + plotH, margin.top);
+  addYAxis(svg, margin.left, y, maxY, margin.top, margin.top + plotH, v => fmt0.format(v), "MEUR");
+  svg.appendChild(svgEl("line", { x1: margin.left, x2: width - margin.right, y1: y(0), y2: y(0), stroke: "#7c8794", "stroke-width": 1.2 }));
+  if (minY < 0) {
+    for (let i = 1; i <= 2; i++) {
+      const value = minY * i / 2;
+      const text = svgEl("text", { x: margin.left - 8, y: y(value) + 4, "text-anchor": "end", class: "tick" });
+      text.textContent = fmt0.format(value);
+      svg.appendChild(text);
+    }
+  }
+  const band = plotW / rows.length;
+  rows.forEach((row, rowIndex) => {
+    let positiveY0 = 0;
+    let negativeY0 = 0;
+    const xCenter = margin.left + rowIndex * band + band / 2;
+    components.forEach(component => {
+      const value = row[component.key] || 0;
+      const base = value >= 0 ? positiveY0 : negativeY0;
+      const next = base + value;
+      const rect = svgEl("rect", {
+        x: xCenter - band * 0.24,
+        y: value >= 0 ? y(next) : y(base),
+        width: band * 0.48,
+        height: Math.abs(y(base) - y(next)),
+        fill: COLORS[component.colorKey],
+        rx: 2
+      });
+      rect.addEventListener("mousemove", e => showTip(e, `<b>${row.country} ${row.period}</b><br>${component.label}: ${fmt1.format(value)} MEUR`));
+      rect.addEventListener("mouseleave", hideTip);
+      svg.appendChild(rect);
+      if (value >= 0) positiveY0 = next;
+      else negativeY0 = next;
+    });
+    const dot = svgEl("circle", { cx: xCenter, cy: y(row.sew_meur || 0), r: 5, fill: COLORS.sew });
+    dot.addEventListener("mousemove", e => showTip(e, `<b>${row.country} ${row.period}</b><br>Net SEW: ${fmt1.format(row.sew_meur || 0)} MEUR`));
+    dot.addEventListener("mouseleave", hideTip);
+    svg.appendChild(dot);
+    const text = svgEl("text", { x: xCenter, y: height - 12, "text-anchor": "middle", class: "tick" });
+    text.textContent = `${row.country} ${row.period}`;
+    svg.appendChild(text);
+  });
+  legend.innerHTML = [
+    ...components.map(component => `<span><span class="swatch" style="background:${COLORS[component.colorKey]}"></span>${component.label}</span>`),
+    `<span><span class="swatch" style="background:${COLORS.sew};border-radius:50%"></span>Net SEW</span>`
+  ].join("");
+}
+
+function renderWelfare() {
+  const effect = selectedWelfareEffect();
+  renderWelfareTable(effect);
+  renderWelfareChart(effect);
+}
+
 function renderWeek() {
   const period = document.getElementById("weekPeriod").value;
-  const start = document.getElementById("weekStart").value;
-  const rows = (DATA.weekData[period] || []).filter(r => r.timestep.slice(0, 10) >= start).slice(0, 168);
+  const isCompact = DATA.weekDataMode === "compact";
+  const source = DATA.weekData[period] || (isCompact ? {} : []);
+  const preset = activeWeekPreset || "shed";
+  const rows = isCompact
+    ? ((source[preset] || source.shed || source.winter || { rows: [] }).rows || [])
+    : source.filter(r => r.timestep.slice(0, 10) >= document.getElementById("weekStart").value).slice(0, 168);
+  const label = isCompact ? (source[preset]?.label || source.shed?.label || source.winter?.label || "") : "";
+  document.getElementById("weekRangeLabel").textContent = label ? `Showing ${label}` : "";
   const svg = document.getElementById("weekChart"); clear(svg);
   if (!rows.length) {
     const msg = svgEl("text", { x: 70, y: 90, class: "tick" }); msg.textContent = "No data for selected week."; svg.appendChild(msg); return;
@@ -1299,28 +1869,35 @@ function highestSheddingWeekStart(period) {
   const windowSize = 168;
   if (rows.length <= windowSize) return rows[0]?.timestep.slice(0, 10) || DATA.dateMin;
   const shed = rows.map(row => Math.max(row.load_shedding || 0, 0));
-  let running = shed.slice(0, windowSize).reduce((sum, value) => sum + value, 0);
-  const sums = [running];
-  for (let i = windowSize; i < shed.length; i++) {
-    running += shed[i] - shed[i - windowSize];
-    sums.push(running);
-  }
-  const maxShed = Math.max(...sums);
-  if (maxShed <= 1e-6) return rows[0].timestep.slice(0, 10);
-  let bestStart = 0;
-  let bestCenterDistance = Number.POSITIVE_INFINITY;
-  sums.forEach((sum, start) => {
-    if (Math.abs(sum - maxShed) > 1e-6) return;
-    let weightedIndex = 0;
-    for (let i = start; i < start + windowSize; i++) weightedIndex += i * shed[i];
-    const sheddingCenter = weightedIndex / sum;
-    const windowCenter = start + (windowSize - 1) / 2;
-    const centerDistance = Math.abs(sheddingCenter - windowCenter);
-    if (centerDistance < bestCenterDistance) {
-      bestCenterDistance = centerDistance;
-      bestStart = start;
+  let bestEpisodeStart = -1;
+  let bestEpisodeEnd = -1;
+  let bestEpisodeEnergy = 0;
+  let start = -1;
+  let energy = 0;
+  shed.forEach((value, index) => {
+    if (value > 1e-6) {
+      if (start < 0) start = index;
+      energy += value;
+      return;
     }
+    if (start >= 0 && energy > bestEpisodeEnergy) {
+      bestEpisodeStart = start;
+      bestEpisodeEnd = index - 1;
+      bestEpisodeEnergy = energy;
+    }
+    start = -1;
+    energy = 0;
   });
+  if (start >= 0 && energy > bestEpisodeEnergy) {
+    bestEpisodeStart = start;
+    bestEpisodeEnd = shed.length - 1;
+    bestEpisodeEnergy = energy;
+  }
+  if (bestEpisodeEnergy <= 1e-6) return rows[0].timestep.slice(0, 10);
+  let weightedIndex = 0;
+  for (let i = bestEpisodeStart; i <= bestEpisodeEnd; i++) weightedIndex += i * shed[i];
+  const episodeCenter = weightedIndex / bestEpisodeEnergy;
+  const bestStart = Math.max(0, Math.min(Math.round(episodeCenter - (windowSize - 1) / 2), rows.length - windowSize));
   return rows[bestStart].timestep.slice(0, 10);
 }
 
@@ -1346,9 +1923,11 @@ function weekPresetDate(preset) {
 }
 
 function applyWeekPreset(preset) {
-  const date = document.getElementById("weekStart");
-  date.value = weekPresetDate(preset);
   setActiveWeekPreset(preset);
+  if (DATA.weekDataMode !== "compact") {
+    const date = document.getElementById("weekStart");
+    date.value = weekPresetDate(preset);
+  }
   renderWeek();
 }
 
@@ -1358,15 +1937,23 @@ function initControls() {
   weekPeriod.innerHTML = periods.map(p => `<option value="${p}">${p}</option>`).join("");
   weekPeriod.value = periods[0];
   const date = document.getElementById("weekStart");
-  date.min = DATA.dateMin;
-  date.max = DATA.dateMax;
-  date.value = highestSheddingWeekStart(weekPeriod.value);
+  const dateLabel = document.getElementById("weekStartLabel");
+  const compact = DATA.weekDataMode === "compact";
+  date.hidden = compact;
+  dateLabel.hidden = compact;
   setActiveWeekPreset("shed");
+  if (!compact) {
+    date.min = DATA.dateMin;
+    date.max = DATA.dateMax;
+    date.value = highestSheddingWeekStart(weekPeriod.value);
+    date.onchange = () => {
+      setActiveWeekPreset(null);
+      renderWeek();
+    };
+  } else {
+    date.onchange = null;
+  }
   weekPeriod.onchange = () => applyWeekPreset(activeWeekPreset || "shed");
-  date.onchange = () => {
-    setActiveWeekPreset(null);
-    renderWeek();
-  };
   document.getElementById("winterWeek").onclick = () => applyWeekPreset("winter");
   document.getElementById("summerWeek").onclick = () => applyWeekPreset("summer");
   document.getElementById("shedWeek").onclick = () => applyWeekPreset("shed");
@@ -1427,12 +2014,14 @@ function renderAll() {
 initTabs();
 initCountryControl();
 initComparisonControls();
+initWelfareControls();
 initControls();
 renderModelSummary();
 renderAll();
 window.addEventListener("resize", () => {
   renderAll();
   if (!document.getElementById("comparePanel").hidden) renderComparison();
+  if (!document.getElementById("welfarePanel").hidden) renderWelfare();
 });
 </script>
 </body>
@@ -1440,8 +2029,19 @@ window.addEventListener("resize", () => {
 """
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build the PyPSA output dashboard HTML.")
+    parser.add_argument(
+        "--full-week-data",
+        action="store_true",
+        help="Embed all hourly dispatch rows so the Dispatch Week datepicker can select any week.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    data = load_dashboard_bundle(OUTPUT_DIR)
+    args = parse_args()
+    data = load_dashboard_bundle(OUTPUT_DIR, compact_week_data=not args.full_week_data)
     html = HTML_TEMPLATE.replace("__DATA__", json.dumps(data, separators=(",", ":")))
     DASHBOARD_PATH.write_text(html, encoding="utf-8")
     print(f"Wrote dashboard to {DASHBOARD_PATH}")
