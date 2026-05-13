@@ -365,6 +365,13 @@ def _dashboard_payload(
                     else 0,
                     3,
                 ),
+                "average_price_eur_per_mwh": _round(group["price_eur_per_mwh"].mean(), 3),
+                "average_price_without_shedding_eur_per_mwh": _round(
+                    group.loc[shed <= 1e-6, "price_eur_per_mwh"].mean()
+                    if (shed <= 1e-6).any()
+                    else 0,
+                    3,
+                ),
                 "voll_eur_per_mwh": _round(
                     capacities.loc[
                         capacities["carrier"] == "load_shedding", "marginal_cost"
@@ -696,6 +703,82 @@ def load_welfare_effects(output_dir: Path = OUTPUT_DIR) -> list[dict]:
     return effects
 
 
+def _rows_by_timestep(rows: list[dict]) -> dict[str, dict]:
+    return {str(row["timestep"]): row for row in rows}
+
+
+def _aligned_week_window(
+    reference_rows: list[dict],
+    target_rows: list[dict],
+    preset: str,
+) -> dict:
+    target_by_timestep = _rows_by_timestep(target_rows)
+    aligned_rows = [target_by_timestep[row["timestep"]] for row in reference_rows if row["timestep"] in target_by_timestep]
+    label = ""
+    if aligned_rows:
+        start = str(aligned_rows[0]["timestep"])[:10]
+        end = str(aligned_rows[-1]["timestep"])[:10]
+        label = f"{start} to {end}"
+    return {"label": label, "preset": preset, "rows": aligned_rows}
+
+
+def _outage_week_data(with_link: dict, islanded: dict, period: str) -> dict:
+    with_link_rows = with_link["weekData"][period]
+    islanded_rows = islanded["weekData"][period]
+    islanded_frame = pd.DataFrame(islanded_rows)
+    if islanded_frame.empty:
+        return {"withInterconnector": {}, "islanded": {}}
+    islanded_frame["timestep"] = pd.to_datetime(islanded_frame["timestep"])
+    windows = {
+        "winter": _fixed_week(islanded_frame, "01-15"),
+        "summer": _fixed_week(islanded_frame, "07-15"),
+        "shed": _highest_shedding_week(islanded_frame),
+    }
+    islanded_windows = {
+        key: {
+            "label": _week_label(window),
+            "preset": key,
+            "rows": _series_points(window, WEEK_COLUMNS),
+        }
+        for key, window in windows.items()
+    }
+    with_link_windows = {
+        key: _aligned_week_window(window["rows"], with_link_rows, key)
+        for key, window in islanded_windows.items()
+    }
+    return {"withInterconnector": with_link_windows, "islanded": islanded_windows}
+
+
+def load_outage_comparison(output_dir: Path = OUTPUT_DIR) -> dict | None:
+    period = "2030"
+    years = {}
+    for with_link_dir in sorted((output_dir / "DK_NL").glob("weather_*")):
+        if not has_output_tables(with_link_dir):
+            continue
+        weather_year = int(with_link_dir.name.removeprefix("weather_"))
+        islanded_name = f"DK_dispatch_fixed_2030_from_DK_NL_DK_weather_{weather_year}"
+        islanded_dir = scenario_output_dir(output_dir, islanded_name, weather_year, 3)
+        if not has_output_tables(islanded_dir):
+            continue
+        with_link = load_dashboard_data(with_link_dir, compact_week_data=False)["regions"]["DK"]
+        islanded = load_dashboard_data(islanded_dir, compact_week_data=False)
+        years[str(weather_year)] = {
+            "period": period,
+            "weatherYear": weather_year,
+            "withInterconnectorLabel": "DK_NL with interconnector",
+            "islandedLabel": "DK islanded dispatch",
+            "islandedScenario": islanded_name,
+            "weekData": _outage_week_data(with_link, islanded, period),
+        }
+    if not years:
+        return None
+    sorted_years = sorted(years, key=int)
+    return {
+        "years": years,
+        "defaultClimateYear": "2008" if "2008" in years else sorted_years[0],
+    }
+
+
 def load_dashboard_bundle(output_dir: Path = OUTPUT_DIR, compact_week_data: bool = True) -> dict:
     datasets = {}
 
@@ -723,7 +806,7 @@ def load_dashboard_bundle(output_dir: Path = OUTPUT_DIR, compact_week_data: bool
     if not datasets:
         raise FileNotFoundError(f"No model output tables found under {output_dir}")
 
-    preferred = "NL" if "NL" in datasets else sorted(datasets)[0]
+    preferred = "DK_NL" if "DK_NL" in datasets else sorted(datasets)[0]
     preferred_years = sorted(datasets[preferred], key=int)
     preferred_climate = "2008" if "2008" in preferred_years else preferred_years[0]
     return {
@@ -731,6 +814,7 @@ def load_dashboard_bundle(output_dir: Path = OUTPUT_DIR, compact_week_data: bool
         "defaultCountry": preferred,
         "defaultClimateYear": preferred_climate,
         "welfareEffects": load_welfare_effects(output_dir),
+        "outageComparison": load_outage_comparison(output_dir),
     }
 
 
@@ -955,6 +1039,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   <div class="tabs" role="tablist" aria-label="Dashboard views">
     <button class="tab-button" id="detailsTab" type="button" role="tab" aria-selected="true" aria-controls="detailsPanel">Scenario Details</button>
     <button class="tab-button" id="compareTab" type="button" role="tab" aria-selected="false" aria-controls="comparePanel">DK/NL Comparison</button>
+    <button class="tab-button" id="outageTab" type="button" role="tab" aria-selected="false" aria-controls="outagePanel">DK Interconnector Outage</button>
     <button class="tab-button" id="welfareTab" type="button" role="tab" aria-selected="false" aria-controls="welfarePanel">SEW Effects</button>
   </div>
   <section id="detailsPanel" class="tab-panel" role="tabpanel" aria-labelledby="detailsTab">
@@ -968,29 +1053,29 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
     <div class="grid">
     <div class="panel">
-      <h2>Active Capacity By Model Year</h2>
+      <h2>Active capacity by model year</h2>
       <svg id="capacityChart"></svg>
       <div class="legend" id="capacityLegend"></div>
     </div>
     <div class="panel">
-      <h2>Capacity Built By Investment Year</h2>
+      <h2>Capacity built by investment year</h2>
       <svg id="buildCapacityChart"></svg>
       <div class="legend" id="buildCapacityLegend"></div>
     </div>
     <div class="panel">
-      <h2>Average Prices</h2>
+      <h2>Average prices</h2>
       <svg id="averagePriceChart"></svg>
       <div class="legend">
         <span><span class="swatch" style="background:var(--demand)"></span>Average electricity price</span>
       </div>
     </div>
     <div class="panel">
-      <h2>Duration Curve</h2>
+      <h2>Duration curve</h2>
       <svg id="durationChart"></svg>
       <div class="legend" id="durationLegend"></div>
     </div>
     <div class="panel wide">
-      <h2>Dispatch Week</h2>
+      <h2>Dispatch week</h2>
       <div class="controls">
         <label for="weekPeriod">Model year</label>
         <select id="weekPeriod"></select>
@@ -1012,16 +1097,16 @@ HTML_TEMPLATE = r"""<!doctype html>
       </div>
     </div>
     <div class="panel wide">
-      <h2>Security Of Supply</h2>
+      <h2>Security of supply</h2>
       <div id="securityTable"></div>
     </div>
     <div class="panel">
-      <h2>Capture Rates</h2>
+      <h2>Capture rates</h2>
       <svg id="captureChart"></svg>
       <div class="legend" id="captureLegend"></div>
     </div>
     <div class="panel">
-      <h2>Unit CAPEX By Investment Year</h2>
+      <h2>Unit CAPEX by investment year</h2>
       <svg id="capexChart"></svg>
       <div class="legend" id="capexLegend"></div>
     </div>
@@ -1036,12 +1121,12 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
     <div class="grid">
       <div class="panel">
-        <h2>Annual Baseload Prices</h2>
+        <h2>Annual baseload prices</h2>
         <svg id="comparisonPriceChart"></svg>
         <div class="legend" id="comparisonPriceLegend"></div>
       </div>
       <div class="panel">
-        <h2>Generation Shares</h2>
+        <h2>Generation shares</h2>
         <svg id="comparisonGenerationChart"></svg>
         <div class="legend" id="comparisonGenerationLegend"></div>
       </div>
@@ -1054,13 +1139,41 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
     <div class="grid">
       <div class="panel wide">
-        <h2>Socio-economic Welfare Decomposition</h2>
+        <h2>Socio-economic welfare decomposition</h2>
         <div id="welfareSummary"></div>
       </div>
       <div class="panel wide">
-        <h2>SEW Contributions By Country</h2>
+        <h2>SEW contributions by country</h2>
         <svg id="welfareChart"></svg>
         <div class="legend" id="welfareLegend"></div>
+      </div>
+    </div>
+  </section>
+  <section id="outagePanel" class="tab-panel" role="tabpanel" aria-labelledby="outageTab" hidden>
+    <div class="grid">
+      <div class="panel wide">
+        <h2>DK 2030 security of supply with and without NL interconnector</h2>
+        <div class="controls">
+          <label for="outageClimateYearSelect">Climate year</label>
+          <select id="outageClimateYearSelect"></select>
+        </div>
+        <div id="outageComparisonTable"></div>
+      </div>
+      <div class="panel wide">
+        <h2>Dispatch week - DK_NL with interconnector</h2>
+        <div class="controls">
+          <button id="outageWinterWeek" type="button">Winter week</button>
+          <button id="outageSummerWeek" type="button">Summer week</button>
+          <button id="outageShedWeek" type="button">Highest shedding</button>
+          <span id="outageWeekRangeLabel" class="muted-inline"></span>
+        </div>
+        <svg id="outageWithLinkWeekChart"></svg>
+        <div class="legend" id="outageWithLinkWeekLegend"></div>
+      </div>
+      <div class="panel wide">
+        <h2>Dispatch week - DK islanded dispatch</h2>
+        <svg id="outageIslandedWeekChart"></svg>
+        <div class="legend" id="outageIslandedWeekLegend"></div>
       </div>
     </div>
   </section>
@@ -1070,9 +1183,11 @@ HTML_TEMPLATE = r"""<!doctype html>
 const APP_DATA = __DATA__;
 const DATASETS = APP_DATA.datasets || {};
 const WELFARE_EFFECTS = APP_DATA.welfareEffects || [];
+const OUTAGE_COMPARISON = APP_DATA.outageComparison || null;
 let DATA;
 let activeWeekPreset = "shed";
-const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", gas_turbine_cc: "#00a6a6", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058", interconnector_import: "#ef8354", interconnector_export: "#ef8354", consumer_surplus: "#2f80ed", producer_surplus: "#18a058", congestion_rent: "#ef8354", sew: "#111827" };
+let activeOutageWeekPreset = "shed";
+const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", gas_turbine_cc: "#00a6a6", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058", interconnector_import: "#8a8f98", interconnector_export: "#ef8354", consumer_surplus: "#2f80ed", producer_surplus: "#18a058", congestion_rent: "#ef8354", sew: "#111827" };
 const YEAR_COLORS = ["#111827", "#2f80ed", "#18a058", "#c43d3d", "#7a5195"];
 const COUNTRY_COLORS = ["#111827", "#2f80ed", "#18a058", "#c43d3d", "#7a5195", "#00a6a6"];
 const LABELS = { wind: "Wind", solar: "Solar", gas: "Gas turbine", gas_turbine_cc: "Gas turbine CC", load_shedding: "Load shedding", demand: "Demand", interconnector_import: "Import", interconnector_export: "Export" };
@@ -1277,6 +1392,7 @@ function initTabs() {
   const tabs = [
     { button: document.getElementById("detailsTab"), panel: document.getElementById("detailsPanel") },
     { button: document.getElementById("compareTab"), panel: document.getElementById("comparePanel") },
+    { button: document.getElementById("outageTab"), panel: document.getElementById("outagePanel") },
     { button: document.getElementById("welfareTab"), panel: document.getElementById("welfarePanel") }
   ];
   tabs.forEach(tab => {
@@ -1287,6 +1403,7 @@ function initTabs() {
         item.panel.hidden = !selected;
       });
       if (tab.panel.id === "comparePanel") renderComparison();
+      if (tab.panel.id === "outagePanel") renderOutageComparison();
       if (tab.panel.id === "welfarePanel") renderWelfare();
     });
   });
@@ -1358,6 +1475,217 @@ function renderSecurity() {
     el.addEventListener("mousemove", e => showTip(e, el.dataset.tip));
     el.addEventListener("mouseleave", hideTip);
   });
+}
+
+function securityRowFor(dataset, period) {
+  const security = (dataset?.security || []).find(row => Number(row.period) === Number(period));
+  if (!security) return null;
+  const summary = (dataset.summary || []).find(row => Number(row.period) === Number(period)) || {};
+  return { ...security, peak_demand_mw: summary.peak_demand_mw || 0, energy_twh: summary.energy_twh || 0 };
+}
+
+function outageClimateYear() {
+  return document.getElementById("outageClimateYearSelect").value;
+}
+
+function selectedOutageComparison() {
+  return OUTAGE_COMPARISON?.years?.[outageClimateYear()] || null;
+}
+
+function renderOutageComparison() {
+  const container = document.getElementById("outageComparisonTable");
+  const comparison = selectedOutageComparison();
+  const year = outageClimateYear();
+  const interconnectorDataset = DATASETS.DK_NL?.[year]?.regions?.DK;
+  const islandedDataset = DATASETS[comparison?.islandedScenario]?.[year];
+  const interconnector = securityRowFor(interconnectorDataset, 2030);
+  const islanded = securityRowFor(islandedDataset, 2030);
+  if (!interconnector || !islanded) {
+    container.innerHTML = `
+      <div class="empty">
+        Missing DK_NL 2008 DK-region or islanded fixed-capacity dispatch output for 2030.
+      </div>`;
+    return;
+  }
+  const metrics = [
+    { label: "Peak demand", unit: "GW", value: row => row.peak_demand_mw / 1000, formatter: fmt1 },
+    { label: "Annual demand", unit: "TWh/y", value: row => row.energy_twh, formatter: fmt1 },
+    { label: "LOLE", unit: "h/y", value: row => row.lole_hours, formatter: fmt0 },
+    { label: "EENS", unit: "GWh/y", value: row => row.eens_gwh, formatter: fmt2 },
+    { label: "EENS / demand", unit: "%", value: row => row.eens_pct_demand, formatter: fmt2 },
+    { label: "Peak shed", unit: "GW", value: row => row.peak_shed_mw / 1000, formatter: fmt1 },
+    { label: "Gas generation", unit: "TWh/y", value: row => row.gas_generation_twh, formatter: fmt1 },
+    { label: "Import", unit: "TWh/y", value: row => row.import_twh || 0, formatter: fmt1 },
+    { label: "Export", unit: "TWh/y", value: row => row.export_twh || 0, formatter: fmt1 },
+    { label: "Interconnector utilisation", unit: "%", value: row => row.interconnector_utilisation_pct || 0, formatter: fmt1 },
+    { label: "Average price across all hours", unit: "EUR/MWh", value: row => row.average_price_eur_per_mwh || 0, formatter: fmt1 },
+    { label: "Average price without load shedding", unit: "EUR/MWh", value: row => row.average_price_without_shedding_eur_per_mwh || 0, formatter: fmt1 },
+    { label: "VoLL", unit: "EUR/MWh", value: row => row.voll_eur_per_mwh, formatter: fmt0 },
+    {
+      label: "Cumulative VoLL",
+      unit: "MEUR/y",
+      value: row => (row.eens_mwh || 0) * (row.voll_eur_per_mwh || 0) / 1_000_000,
+      formatter: fmt1
+    }
+  ];
+  const rows = metrics.map(metric => {
+    const withLink = metric.value(interconnector);
+    const island = metric.value(islanded);
+    const delta = island - withLink;
+    return `
+      <tr>
+        <td>${metric.label}</td>
+        <td>${metric.unit}</td>
+        <td>${metric.formatter.format(withLink)}</td>
+        <td>${metric.formatter.format(island)}</td>
+        <td>${metric.formatter.format(delta)}</td>
+      </tr>`;
+  }).join("");
+  container.innerHTML = `
+    <p class="muted-inline">
+      Compares DK in 2030 under the combined DK_NL ${year} model with the fixed-capacity DK-only dispatch run using the DK_NL ${year} DK build-out.
+    </p>
+    <table class="security-table">
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th>Unit</th>
+          <th>DK_NL with interconnector</th>
+          <th>DK islanded dispatch</th>
+          <th>Islanded minus with interconnector</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  renderOutageWeekCharts();
+}
+
+function outageDispatchCarriers(rows) {
+  const preferred = ["gas_turbine_cc", "gas", "wind", "solar", "interconnector_import", "interconnector_export", "load_shedding"];
+  return preferred.filter(carrier => rows.some(row => Math.abs(row[carrier] || 0) > 1e-6 || carrier === "load_shedding"));
+}
+
+function renderDispatchWeekChart(svgId, legendId, rows, carriers, period) {
+  const svg = document.getElementById(svgId); clear(svg);
+  const legend = document.getElementById(legendId);
+  if (!rows.length) {
+    addEmpty(svg, "No data for selected week.");
+    legend.innerHTML = "";
+    return;
+  }
+  const { width, height, margin } = dims(svg);
+  const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
+  const positiveTotals = rows.map(r => carriers.reduce((sum, carrier) => sum + Math.max(r[carrier] || 0, 0), 0) / 1000);
+  const negativeTotals = rows.map(r => carriers.reduce((sum, carrier) => sum + Math.min(r[carrier] || 0, 0), 0) / 1000);
+  const maxY = Math.max(...rows.map(r => r.demand / 1000), ...positiveTotals, 1) * 1.05;
+  const minY = Math.min(...negativeTotals, 0) * 1.05;
+  const x = scale(0, rows.length - 1, margin.left, margin.left + plotW);
+  const y = scale(minY, maxY, margin.top + plotH, margin.top);
+  const axisMax = Math.max(Math.abs(minY), Math.abs(maxY));
+  addYAxis(svg, margin.left, y, maxY, margin.top, margin.top + plotH, v => fmt1.format(v), "GW");
+  if (minY < 0) {
+    svg.appendChild(svgEl("line", { x1: margin.left, x2: width - margin.right, y1: y(0), y2: y(0), stroke: "#7c8794", "stroke-width": 1.2 }));
+    for (let i = 1; i <= 2; i++) {
+      const value = -axisMax * i / 2;
+      const text = svgEl("text", { x: margin.left - 8, y: y(value) + 4, "text-anchor": "end", class: "tick" });
+      text.textContent = fmt1.format(value);
+      svg.appendChild(text);
+    }
+  }
+  const band = plotW / rows.length;
+  rows.forEach((r, i) => {
+    let positiveY0 = 0;
+    let negativeY0 = 0;
+    carriers.forEach(carrier => {
+      const value = (r[carrier] || 0) / 1000;
+      const base = value >= 0 ? positiveY0 : negativeY0;
+      const next = base + value;
+      const rect = svgEl("rect", {
+        x: x(i) - band * 0.45,
+        y: value >= 0 ? y(next) : y(base),
+        width: Math.max(band * 0.9, 1),
+        height: Math.max(Math.abs(y(base) - y(next)), 0),
+        fill: COLORS[carrier]
+      });
+      const dispatchLines = carriers.map(name => `${labelFor(name)}: ${fmt1.format((r[name] || 0) / 1000)} GW`).join("<br>");
+      rect.addEventListener("mousemove", e => showTip(e, `<b>${period} ${r.timestep}</b><br>Demand: ${fmt1.format(r.demand / 1000)} GW<br>${dispatchLines}<br>Price: ${fmt2.format(r.price_eur_per_mwh)} EUR/MWh`));
+      rect.addEventListener("mouseleave", hideTip);
+      svg.appendChild(rect);
+      if (value >= 0) positiveY0 = next;
+      else negativeY0 = next;
+    });
+  });
+  const demandLine = rows.map((r, i) => ({ x: i, y: r.demand / 1000 }));
+  svg.appendChild(svgEl("path", { d: pathLine(demandLine, x, y), fill: "none", stroke: COLORS.demand, "stroke-width": 2.2 }));
+  legend.innerHTML = [...carriers, "demand"]
+    .map(carrier => `<span><span class="swatch" style="background:${COLORS[carrier]}"></span>${labelFor(carrier)}</span>`)
+    .join("");
+}
+
+function setActiveOutageWeekPreset(preset) {
+  activeOutageWeekPreset = preset;
+  const buttons = {
+    winter: document.getElementById("outageWinterWeek"),
+    summer: document.getElementById("outageSummerWeek"),
+    shed: document.getElementById("outageShedWeek")
+  };
+  Object.entries(buttons).forEach(([key, button]) => {
+    const isActive = key === preset;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+  });
+}
+
+function renderOutageWeekCharts() {
+  const comparison = selectedOutageComparison();
+  const label = document.getElementById("outageWeekRangeLabel");
+  if (!comparison?.weekData) {
+    addEmpty(document.getElementById("outageWithLinkWeekChart"), "No outage comparison data is available.");
+    addEmpty(document.getElementById("outageIslandedWeekChart"), "No outage comparison data is available.");
+    label.textContent = "";
+    return;
+  }
+  const preset = activeOutageWeekPreset || "shed";
+  const withLink = comparison.weekData.withInterconnector?.[preset] || { rows: [], label: "" };
+  const islanded = comparison.weekData.islanded?.[preset] || { rows: [], label: "" };
+  label.textContent = islanded.label ? `Showing ${islanded.label}` : "";
+  renderDispatchWeekChart(
+    "outageWithLinkWeekChart",
+    "outageWithLinkWeekLegend",
+    withLink.rows || [],
+    outageDispatchCarriers(withLink.rows || []),
+    comparison.period || "2030"
+  );
+  renderDispatchWeekChart(
+    "outageIslandedWeekChart",
+    "outageIslandedWeekLegend",
+    islanded.rows || [],
+    outageDispatchCarriers(islanded.rows || []),
+    comparison.period || "2030"
+  );
+}
+
+function initOutageControls() {
+  const select = document.getElementById("outageClimateYearSelect");
+  const years = Object.keys(OUTAGE_COMPARISON?.years || {}).sort((a, b) => Number(a) - Number(b));
+  select.innerHTML = years.map(year => `<option value="${year}">${year}</option>`).join("");
+  select.value = OUTAGE_COMPARISON?.defaultClimateYear && years.includes(String(OUTAGE_COMPARISON.defaultClimateYear))
+    ? String(OUTAGE_COMPARISON.defaultClimateYear)
+    : (years.includes("2008") ? "2008" : years[0]);
+  select.addEventListener("change", renderOutageComparison);
+  setActiveOutageWeekPreset(activeOutageWeekPreset);
+  document.getElementById("outageWinterWeek").onclick = () => {
+    setActiveOutageWeekPreset("winter");
+    renderOutageWeekCharts();
+  };
+  document.getElementById("outageSummerWeek").onclick = () => {
+    setActiveOutageWeekPreset("summer");
+    renderOutageWeekCharts();
+  };
+  document.getElementById("outageShedWeek").onclick = () => {
+    setActiveOutageWeekPreset("shed");
+    renderOutageWeekCharts();
+  };
 }
 
 function renderStackedBars(svgId, rows, xKey, yKey, groups, labelKey, legendId, options = {}) {
@@ -1529,6 +1857,26 @@ function comparisonDatasets() {
     .filter(item => item.data);
 }
 
+function comparisonGenerationDatasets() {
+  const climateYear = comparisonClimateYear();
+  const items = [];
+  selectedComparisonRegions().forEach(country => {
+    const data = DATASETS[country]?.[climateYear];
+    if (!data) return;
+    if (data.regions) {
+      Object.keys(data.regions).sort().forEach(region => {
+        items.push({
+          country: `${country} ${region}`,
+          data: data.regions[region]
+        });
+      });
+      return;
+    }
+    items.push({ country, data });
+  });
+  return items.map((item, i) => ({ ...item, color: COUNTRY_COLORS[i % COUNTRY_COLORS.length] }));
+}
+
 function renderComparisonPrices(items) {
   const svg = document.getElementById("comparisonPriceChart"); clear(svg);
   const { width, height, margin } = dims(svg);
@@ -1635,9 +1983,8 @@ function renderComparisonGeneration(items) {
 }
 
 function renderComparison() {
-  const items = comparisonDatasets();
-  renderComparisonPrices(items);
-  renderComparisonGeneration(items);
+  renderComparisonPrices(comparisonDatasets());
+  renderComparisonGeneration(comparisonGenerationDatasets());
 }
 
 function selectedWelfareEffect() {
@@ -2015,12 +2362,14 @@ initTabs();
 initCountryControl();
 initComparisonControls();
 initWelfareControls();
+initOutageControls();
 initControls();
 renderModelSummary();
 renderAll();
 window.addEventListener("resize", () => {
   renderAll();
   if (!document.getElementById("comparePanel").hidden) renderComparison();
+  if (!document.getElementById("outagePanel").hidden) renderOutageComparison();
   if (!document.getElementById("welfarePanel").hidden) renderWelfare();
 });
 </script>

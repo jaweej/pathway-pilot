@@ -10,6 +10,10 @@ import pypsa
 
 def optimal_capacities(network: pypsa.Network) -> pd.DataFrame:
     table = network.generators.reset_index(names="generator")
+    if "p_nom_opt" not in table.columns:
+        table["p_nom_opt"] = table["p_nom"]
+    else:
+        table["p_nom_opt"] = table["p_nom_opt"].fillna(table["p_nom"])
     columns = [
         "generator",
         "bus",
