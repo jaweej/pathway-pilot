@@ -104,13 +104,21 @@ def _assign_solution(model: object, primal: np.ndarray, dual: np.ndarray, object
             f"CPLEX returned {dual.size} dual values for "
             f"{len(model.matrices.clabels)} Linopy constraints."
         )
-    model.objective.set_value(objective)
     model.status = "ok"
     model.termination_condition = "optimal"
     model.solver_model = None
     model.solver_name = "gams-cplex"
 
     primal_by_label = pd.Series(primal, index=model.matrices.vlabels, dtype="float64")
+    variables = model.variables.flat
+    fixed = variables.loc[variables["lower"] == variables["upper"]]
+    if not fixed.empty:
+        # Fixed-format MPS can round large bounds materially (PyPSA's fixed
+        # objective_constant is a common example). These are not optimizer
+        # decisions, so restore their exact source-model values before mapping
+        # the solution and evaluating the original objective expression.
+        exact_fixed = fixed.set_index("labels")["lower"].astype("float64")
+        primal_by_label.update(exact_fixed)
     dual_by_label = pd.Series(dual, index=model.matrices.clabels, dtype="float64")
     for _, variable in model.variables.items():
         labels = np.ravel(variable.labels)
@@ -123,6 +131,12 @@ def _assign_solution(model: object, primal: np.ndarray, dual: np.ndarray, object
             values.reshape(constraint.labels.shape),
             constraint.labels.coords,
         )
+    # MPS is a text format and rounds coefficients on export. Re-evaluate the
+    # original Linopy expression with CPLEX's returned primal values so the
+    # reported objective retains the source model's full-precision coefficients.
+    # The raw CPLEX value remains useful internally for detecting API failures,
+    # but is not the most accurate objective for the original in-memory model.
+    model.objective.set_value(float(model.objective.expression.solution))
 
 
 def _library_path(installation: GamsInstallation) -> Path:

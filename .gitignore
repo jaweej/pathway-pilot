@@ -3,3 +3,6 @@
 __pycache__/
 *.py[cod]
 .claude/settings.local.json
+# PyPSA-Eur is an upstream checkout; reproducible local changes live under
+# integrations/pypsa-eur, while all workflow data is junctioned to DEV_DATA_DIR.
+/pypsa-eur/
