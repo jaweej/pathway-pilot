@@ -46,6 +46,11 @@ def run_model_case(
     demand: pd.DataFrame,
     output_dir: Path,
     weather_year: int,
+    solver_name: str = "highs",
+    gams_dir: str | Path | None = None,
+    cplex_transfer: str = "direct",
+    cplex_method: str = "barrier",
+    cplex_threads: int = 6,
 ) -> None:
     run_started_at = datetime.now().astimezone()
     solve_start = perf_counter()
@@ -64,7 +69,15 @@ def run_model_case(
         capacity_factor_zone=cfg.capacity_factor_zone,
         model_regions=cfg.model_regions,
     )
-    network, status, condition = solve_model(cfg, data)
+    network, status, condition = solve_model(
+        cfg,
+        data,
+        solver_name=solver_name,
+        gams_dir=gams_dir,
+        cplex_transfer=cplex_transfer,
+        cplex_method=cplex_method,
+        cplex_threads=cplex_threads,
+    )
     run_time_seconds = perf_counter() - solve_start
     if (status, condition) != ("ok", "optimal"):
         raise RuntimeError(f"PyPSA solve failed: status={status}, condition={condition}")
@@ -91,6 +104,12 @@ def run_model_case(
             for interconnector in cfg.interconnectors
         ],
         "weather_year": weather_year,
+        "solver": solver_name,
+        "cplex_transfer": network.meta.get("cplex_transfer"),
+        "cplex_method": network.meta.get("cplex_method"),
+        "cplex_threads": network.meta.get("cplex_threads"),
+        "solver_timings_seconds": network.meta.get("solver_timings_seconds"),
+        "objective": float(network.objective),
         "run_at": run_started_at.isoformat(),
     }
     (staged_output_dir / "model_metadata.json").write_text(
@@ -134,6 +153,51 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one pathway-pilot PyPSA model case.")
     parser.add_argument("--model-case", help="Model case from config.model_cases, e.g. DK or NL.")
     parser.add_argument("--weather-year", type=int, help="Weather/climate year to solve.")
+    parser.add_argument(
+        "--solver",
+        choices=["highs", "gams-cplex"],
+        default="highs",
+        help="Optimization backend (default: highs).",
+    )
+    parser.add_argument(
+        "--gams-dir",
+        type=Path,
+        help="GAMS system directory. Auto-detected when --solver=gams-cplex.",
+    )
+    parser.add_argument(
+        "--cplex-transfer",
+        choices=["direct", "gams"],
+        default="direct",
+        help=(
+            "How to transfer Linopy models to GAMS-bundled CPLEX. "
+            "The direct callable-library route is much faster; gams keeps the legacy fallback."
+        ),
+    )
+    parser.add_argument(
+        "--cplex-method",
+        choices=[
+            "automatic",
+            "primal",
+            "dual",
+            "network",
+            "barrier",
+            "sifting",
+            "concurrent",
+        ],
+        default="barrier",
+        help="CPLEX LP algorithm (default: barrier, following POMATO's configuration).",
+    )
+    parser.add_argument(
+        "--cplex-threads",
+        type=int,
+        default=6,
+        help="CPLEX worker-thread limit (default: 6, validated on the current workstation).",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        help="Override the model output root (useful for solver comparisons).",
+    )
     return parser.parse_args()
 
 
@@ -144,14 +208,25 @@ def main() -> None:
         cfg = with_active_model(cfg, args.model_case)
     weather_year = args.weather_year or cfg.climate_years[0]
     capacity_factors, demand = load_time_series()
-    output_root = DEV_DATA_DIR / "pathway-pilot" / "output"
+    output_root = args.output_root or DEV_DATA_DIR / "pathway-pilot" / "output"
     output_dir = scenario_output_dir(
         output_root,
         cfg.active_model,
         weather_year,
         climate_year_count=len(cfg.climate_years),
     )
-    run_model_case(cfg, capacity_factors, demand, output_dir, weather_year)
+    run_model_case(
+        cfg,
+        capacity_factors,
+        demand,
+        output_dir,
+        weather_year,
+        solver_name=args.solver,
+        gams_dir=args.gams_dir,
+        cplex_transfer=args.cplex_transfer,
+        cplex_method=args.cplex_method,
+        cplex_threads=args.cplex_threads,
+    )
 
 
 if __name__ == "__main__":
