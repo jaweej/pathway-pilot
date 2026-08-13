@@ -14,7 +14,8 @@
 - `src/pathway_pilot/model_inputs.py` prepares synthetic and real demand/CF time series.
 - `src/pathway_pilot/technology_data.py` adapts TechCat costs and gas prices.
 - `src/pathway_pilot/build_network.py` builds the PyPSA network.
-- `src/pathway_pilot/solve.py` runs HiGHS via PyPSA.
+- `src/pathway_pilot/solve.py` selects HiGHS or the external
+  `linopy-gams-cplex` package via PyPSA/Linopy.
 - `src/pathway_pilot/outputs.py` writes capacities, dispatch, and prices.
 - `scripts/` contains data-build, model-run, and dashboard entry points.
 

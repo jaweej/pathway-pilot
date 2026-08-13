@@ -5,4 +5,5 @@ numpy>=1.26
 pyyaml>=6.0
 pypsa>=0.30
 highspy>=1.7
+linopy-gams-cplex @ git+https://gitlab.ens.dk/ffk/linopy-gams-cplex.git@v0.1.0
 pytest>=8.0

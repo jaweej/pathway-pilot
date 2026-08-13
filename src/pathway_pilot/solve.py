@@ -5,10 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pypsa
+from linopy_gams_cplex import solve as solve_with_cplex
 
 from pathway_pilot.build_network import build_network
-from pathway_pilot.cplex_callable import CPLEX_LP_METHODS, solve_with_cplex_callable
-from pathway_pilot.gams_cplex import solve_with_gams_cplex
 from pathway_pilot.model_config import ModelConfig
 from pathway_pilot.model_inputs import ModelInputs
 
@@ -32,43 +31,33 @@ def solve_model(
             consistency_check=False,
             include_objective_constant=False,
         )
-        if cplex_transfer == "direct":
-            status, condition, timings = solve_with_cplex_callable(
+        if cplex_transfer in {"direct", "gams"}:
+            result = solve_with_cplex(
                 model,
                 gams_dir=gams_dir,
                 method=cplex_method,
                 threads=cplex_threads,
+                transfer=cplex_transfer,
             )
-            network.meta["cplex_transfer"] = "direct"
+            status = result.status
+            condition = result.termination_condition
+            network.meta["cplex_transfer"] = cplex_transfer
             network.meta["cplex_method"] = cplex_method
             network.meta["cplex_threads"] = cplex_threads
-            network.meta["solver_timings_seconds"] = {
-                "model_export": timings.export_seconds,
-                "solver_read": timings.read_seconds,
-                "model_transfer": timings.export_seconds + timings.read_seconds,
-                "solver": timings.solve_seconds,
-            }
-            print(
-                "Direct CPLEX timings: "
-                f"MPS export {timings.export_seconds:.3f}s, "
-                f"CPLEX read {timings.read_seconds:.3f}s, "
-                f"CPLEX solve {timings.solve_seconds:.3f}s"
-            )
-        elif cplex_transfer == "gams":
-            if cplex_method not in CPLEX_LP_METHODS:
-                choices = ", ".join(CPLEX_LP_METHODS)
-                raise ValueError(
-                    f"Unknown CPLEX LP method {cplex_method!r}; expected one of: {choices}."
+            if result.timings is not None:
+                timings = result.timings
+                network.meta["solver_timings_seconds"] = {
+                    "model_export": timings.export_seconds,
+                    "solver_read": timings.read_seconds,
+                    "model_transfer": timings.export_seconds + timings.read_seconds,
+                    "solver": timings.solve_seconds,
+                }
+                print(
+                    "Direct CPLEX timings: "
+                    f"MPS export {timings.export_seconds:.3f}s, "
+                    f"CPLEX read {timings.read_seconds:.3f}s, "
+                    f"CPLEX solve {timings.solve_seconds:.3f}s"
                 )
-            status, condition = solve_with_gams_cplex(
-                model,
-                gams_dir=gams_dir,
-                lp_method=CPLEX_LP_METHODS[cplex_method],
-                threads=cplex_threads,
-            )
-            network.meta["cplex_transfer"] = "gams"
-            network.meta["cplex_method"] = cplex_method
-            network.meta["cplex_threads"] = cplex_threads
         else:
             raise ValueError(
                 f"Unknown CPLEX transfer mode {cplex_transfer!r}; expected 'direct' or 'gams'."

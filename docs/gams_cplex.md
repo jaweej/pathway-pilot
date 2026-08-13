@@ -12,7 +12,11 @@ The default, fast transfer path:
 
 This avoids constructing a second, generic GAMS algebraic model. The previous bridge remains available as a fallback; it converts MPS to GDX/GAMS with `mps2gms`, expands the generic matrix with the GAMS model generator, invokes the GAMS/CPLEX link, and reads the solution back from GDX.
 
-The fast implementation is in `src/pathway_pilot/cplex_callable.py`; the legacy bridge is in `src/pathway_pilot/gams_cplex.py`. Both currently support continuous LPs, which is the formulation used by this model.
+The reusable solver implementation now lives in the separate internal
+`linopy-gams-cplex` package. This repository contains only the DK/NL model's
+thin solver-selection layer in `src/pathway_pilot/solve.py`. Both direct and
+legacy routes currently support continuous LPs, which is the formulation used
+by this model.
 
 ## Run one case
 
@@ -39,7 +43,12 @@ The default solver settings can be overridden for controlled comparisons:
 
 Available methods are `automatic`, `primal`, `dual`, `network`, `barrier`, `sifting`, and `concurrent`.
 
-The adapter checks `PATHWAY_PILOT_GAMS_DIR`, then `PATH`, then installations under `C:\GAMS`. Before selecting an installation it runs a tiny model through the licensed GAMS/CPLEX link. On the current workstation this selects `C:\GAMS\37` with CPLEX 20.1; the newer GAMS 49 installation is beyond the installed license's maintenance date. An installation can also be selected explicitly:
+The package checks `LINOPY_GAMS_CPLEX_GAMS_DIR`, the transitional
+`PATHWAY_PILOT_GAMS_DIR`, then `PATH`, then installations under `C:\GAMS`.
+Before selecting an installation it runs a tiny model through the licensed
+GAMS/CPLEX link. On the current workstation this selects `C:\GAMS\37` with
+CPLEX 20.1; the newer GAMS 49 installation is beyond the installed license's
+maintenance date. An installation can also be selected explicitly:
 
 ```powershell
 --gams-dir C:\GAMS\37
@@ -51,7 +60,9 @@ Use `--output-root` to keep comparison results separate from the normal output t
 --output-root .tmp\solver_validation\cplex
 ```
 
-No additional Python packages are required. Temporary MPS and legacy GDX/GAMS files are staged below `.tmp\gams_cplex` and removed after solution read-back.
+Install the internal `linopy-gams-cplex` dependency from `requirements.txt`.
+Temporary MPS and legacy GDX/GAMS files are staged below `.tmp\gams_cplex` and
+removed after solution read-back.
 
 ## Performance
 
