@@ -1,9 +1,10 @@
-"""Set up and run PyPSA-Eur's official electricity tutorial with CPLEX."""
+"""Set up and run a pinned PyPSA-Eur electricity instance with CPLEX."""
 
 from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import dataclass
 import os
 from pathlib import Path
 import subprocess
@@ -11,10 +12,44 @@ import subprocess
 
 PYPSA_EUR_VERSION = "v2026.02.0"
 PYPSA_EUR_COMMIT = "d6383ebf602767b1adbb676fe8a16e37a6e9f932"
-RUN_NAME = "cplex-tutorial"
-TARGET = f"results/{RUN_NAME}/networks/base_s_5_elec_.nc"
-PREPARE_TARGET = f"resources/{RUN_NAME}/networks/base_s_5_elec_.nc"
 WORKFLOW_DIRS = ("benchmarks", "cutouts", "logs", "resources", "results")
+
+
+@dataclass(frozen=True)
+class Instance:
+    """Files and resources required by one supported PyPSA-Eur instance."""
+
+    config_name: str
+    run_name: str
+    network_name: str
+    mem_mb: int
+    cores: int
+
+    @property
+    def target(self) -> str:
+        return f"results/{self.run_name}/networks/{self.network_name}"
+
+    @property
+    def prepare_target(self) -> str:
+        return f"resources/{self.run_name}/networks/{self.network_name}"
+
+
+INSTANCES = {
+    "tutorial": Instance(
+        config_name="config.cplex-tutorial.yaml",
+        run_name="cplex-tutorial",
+        network_name="base_s_5_elec_.nc",
+        mem_mb=12000,
+        cores=1,
+    ),
+    "elec-50-12h": Instance(
+        config_name="config.cplex-elec-50-12h.yaml",
+        run_name="cplex-elec-50-12h",
+        network_name="base_s_50_elec_12h.nc",
+        mem_mb=24000,
+        cores=2,
+    ),
+}
 
 
 def _project_root() -> Path:
@@ -118,7 +153,12 @@ def _set_up_storage(checkout: Path, data_root: Path) -> None:
         (data_root / name).mkdir(parents=True, exist_ok=True)
 
 
-def _install_integration(project_root: Path, checkout: Path, data_root: Path) -> Path:
+def _install_integration(
+    project_root: Path,
+    checkout: Path,
+    data_root: Path,
+    instance: Instance,
+) -> Path:
     integration = project_root / "integrations" / "pypsa-eur" / PYPSA_EUR_VERSION
     patch = integration / "solve-network-cplex.patch"
     reverse_check = subprocess.run(
@@ -130,11 +170,11 @@ def _install_integration(project_root: Path, checkout: Path, data_root: Path) ->
         _run(["git", "apply", "--check", str(patch)], cwd=checkout)
         _run(["git", "apply", str(patch)], cwd=checkout)
 
-    template = (integration / "config.cplex-tutorial.yaml").read_text(encoding="utf-8")
+    template = (integration / instance.config_name).read_text(encoding="utf-8")
     rendered = template.replace(
         "__PYPSA_EUR_DATA_ROOT__", data_root.resolve().as_posix()
     )
-    config = checkout / "config" / "config.cplex-tutorial.yaml"
+    config = checkout / "config" / instance.config_name
     config.write_text(rendered, encoding="utf-8")
     return config
 
@@ -144,6 +184,7 @@ def _run_workflow(
     checkout: Path,
     data_root: Path,
     config: Path,
+    instance: Instance,
     *,
     prepare_only: bool,
 ) -> None:
@@ -156,11 +197,11 @@ def _run_workflow(
     environment["TEMP"] = str(data_root / "tmp")
     environment["TMP"] = str(data_root / "tmp")
     environment["LOCALAPPDATA"] = str(data_root / "localappdata")
-    target = PREPARE_TARGET if prepare_only else TARGET
+    target = instance.prepare_target if prepare_only else instance.target
     command = [
         str(snakemake),
         "-c",
-        "2" if prepare_only else "1",
+        "2" if prepare_only else str(instance.cores),
         target,
         "--configfile",
         str(config),
@@ -169,13 +210,19 @@ def _run_workflow(
         "--show-failed-logs",
         "--rerun-incomplete",
         "--resources",
-        "mem_mb=12000",
+        f"mem_mb={instance.mem_mb}",
     ]
     subprocess.run(command, cwd=checkout, env=environment, check=True)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--instance",
+        choices=sorted(INSTANCES),
+        default="tutorial",
+        help="PyPSA-Eur instance to set up and run (default: tutorial).",
+    )
     parser.add_argument(
         "--setup-only",
         action="store_true",
@@ -187,23 +234,25 @@ def main() -> None:
         help="Build the prepared PyPSA network but do not optimize it.",
     )
     args = parser.parse_args()
+    instance = INSTANCES[args.instance]
 
     project_root = _project_root()
     data_root = _dev_data_dir() / "pathway-pilot" / f"pypsa-eur-{PYPSA_EUR_VERSION}"
     checkout = _ensure_checkout(project_root)
     _set_up_storage(checkout, data_root)
-    config = _install_integration(project_root, checkout, data_root)
+    config = _install_integration(project_root, checkout, data_root, instance)
     if not args.setup_only:
         _run_workflow(
             project_root,
             checkout,
             data_root,
             config,
+            instance,
             prepare_only=args.prepare_only,
         )
     print(f"PyPSA-Eur checkout: {checkout}")
     print(f"PyPSA-Eur data root: {data_root}")
-    print(f"Result network: {data_root / Path(TARGET)}")
+    print(f"Result network: {data_root / Path(instance.target)}")
 
 
 if __name__ == "__main__":

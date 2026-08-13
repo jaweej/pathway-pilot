@@ -1,0 +1,31 @@
+# Full-Europe PyPSA-Eur electricity model with 50 spatial clusters and
+# 12-hour temporal resolution, solved through pathway-pilot's CPLEX adapter.
+tutorial: false
+
+run:
+  name: "cplex-elec-50-12h"
+  disable_progressbar: true
+  shared_resources:
+    policy: false
+  use_shadow_directory: false
+
+scenario:
+  clusters: [50]
+  opts: [12h]
+
+solving:
+  options:
+    skip_iterations: true
+    transmission_losses: false
+    linearized_unit_commitment: false
+  solver:
+    name: gams-cplex-direct
+    options: cplex-direct
+  solver_options:
+    cplex-direct:
+      threads: 6
+      method: barrier
+      gams_dir: C:/GAMS/37
+      work_dir: __PYPSA_EUR_DATA_ROOT__/solver-work/elec-50-12h
+  check_objective:
+    enable: false
