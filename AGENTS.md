@@ -31,6 +31,7 @@
 - Do not edit raw files under `C:\Users\B510067\dev_data\TYNDP24`.
 - Do not edit raw TechCat Excel files under `C:\Users\B510067\dev_data\techcat`.
 - Do not overwrite generated files in `C:\Users\B510067\dev_data\pathway-pilot` unless the task explicitly asks to regenerate them.
+- Never overwrite an existing scenario result. Before running a model, resolve and inspect the destination; if it already contains outputs, use `--output-root` or a uniquely named scenario directory instead. Overwriting is allowed only when the user explicitly authorizes replacing the exact existing scenario results.
 - Do not revert user changes or unrelated dirty worktree files.
 
 ## Data/security constraints
