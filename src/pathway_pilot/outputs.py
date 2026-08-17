@@ -8,39 +8,80 @@ import pandas as pd
 import pypsa
 
 
-def optimal_capacities(network: pypsa.Network) -> pd.DataFrame:
-    table = network.generators.reset_index(names="generator")
+CAPACITY_COLUMNS = [
+    "generator",
+    "bus",
+    "carrier",
+    "build_year",
+    "lifetime",
+    "p_nom_opt",
+    "capital_cost",
+    "unit_capex_eur_per_mw",
+    "marginal_cost",
+    "battery_technology",
+    "max_hours",
+]
+
+
+def _component_capacity_table(frame: pd.DataFrame) -> pd.DataFrame:
+    table = frame.reset_index(names="generator")
     if "p_nom_opt" not in table.columns:
         table["p_nom_opt"] = table["p_nom"]
     else:
         table["p_nom_opt"] = table["p_nom_opt"].fillna(table["p_nom"])
-    columns = [
-        "generator",
-        "bus",
-        "carrier",
-        "build_year",
-        "lifetime",
-        "p_nom_opt",
-        "capital_cost",
-        "unit_capex_eur_per_mw",
-        "marginal_cost",
-    ]
-    if "unit_capex_eur_per_mw" not in table.columns:
-        table["unit_capex_eur_per_mw"] = pd.NA
-    table = table[columns].rename(columns={"p_nom_opt": "p_nom_opt_mw"})
+    for column in CAPACITY_COLUMNS:
+        if column not in table.columns:
+            table[column] = pd.NA
+    return table[CAPACITY_COLUMNS].rename(columns={"p_nom_opt": "p_nom_opt_mw"})
+
+
+def optimal_capacities(network: pypsa.Network) -> pd.DataFrame:
+    frames = [_component_capacity_table(network.generators)]
+    if not network.storage_units.empty:
+        frames.append(_component_capacity_table(network.storage_units))
+    table = pd.concat(frames, ignore_index=True)
     table["p_nom_opt_mw"] = table["p_nom_opt_mw"].astype("float64")
     return table
 
 
-def hourly_dispatch(network: pypsa.Network) -> pd.DataFrame:
-    dispatch = network.generators_t.p.copy()
+def _component_dispatch_table(power: pd.DataFrame, metadata: pd.DataFrame) -> pd.DataFrame:
+    dispatch = power.copy()
     dispatch.index.names = ["period", "timestep"]
     table = (
         dispatch.reset_index()
         .melt(id_vars=["period", "timestep"], var_name="generator", value_name="dispatch_mw")
     )
-    metadata = network.generators[["bus", "carrier", "build_year"]].reset_index(names="generator")
     return table.merge(metadata, on="generator", how="left")
+
+
+def hourly_dispatch(network: pypsa.Network) -> pd.DataFrame:
+    metadata_columns = ["bus", "carrier", "build_year"]
+    frames = [
+        _component_dispatch_table(
+            network.generators_t.p,
+            network.generators[metadata_columns].reset_index(names="generator"),
+        )
+    ]
+    if not network.storage_units.empty:
+        frames.append(
+            _component_dispatch_table(
+                network.storage_units_t.p,
+                network.storage_units[metadata_columns].reset_index(names="generator"),
+            )
+        )
+    return pd.concat(frames, ignore_index=True)
+
+
+def hourly_storage_state_of_charge(network: pypsa.Network) -> pd.DataFrame:
+    if network.storage_units.empty:
+        return pd.DataFrame(columns=["period", "timestep", "storage_unit", "state_of_charge_mwh"])
+    soc = network.storage_units_t.state_of_charge.copy()
+    soc.index.names = ["period", "timestep"]
+    return soc.reset_index().melt(
+        id_vars=["period", "timestep"],
+        var_name="storage_unit",
+        value_name="state_of_charge_mwh",
+    )
 
 
 def hourly_interconnector_flows(network: pypsa.Network) -> pd.DataFrame:
@@ -86,3 +127,6 @@ def write_model_outputs(network: pypsa.Network, output_dir: str | Path) -> None:
         output_path / "hourly_interconnector_flows.parquet", index=False
     )
     hourly_prices(network).to_parquet(output_path / "hourly_prices.parquet", index=False)
+    hourly_storage_state_of_charge(network).to_parquet(
+        output_path / "hourly_storage_state_of_charge.parquet", index=False
+    )

@@ -94,14 +94,30 @@ def test_apply_fixed_capacities_disables_investment_and_sets_nominal_capacity():
         },
         index=["wind_2030", "gas_turbine_2030", "load_shedding"],
     )
+    network.storage_units = pd.DataFrame(
+        {
+            "carrier": ["battery"],
+            "p_nom_extendable": [True],
+            "p_nom": [0.0],
+            "p_nom_min": [0.0],
+            "p_nom_max": [2000.0],
+            "capital_cost": [3.0],
+        },
+        index=["li_ion_6h_2030"],
+    )
 
-    apply_fixed_capacities(network, {"wind_2030": 123.0, "gas_turbine_2030": 45.0})
+    apply_fixed_capacities(
+        network, {"wind_2030": 123.0, "gas_turbine_2030": 45.0, "li_ion_6h_2030": 78.0}
+    )
 
     assert network.generators.loc["wind_2030", "p_nom"] == 123.0
     assert network.generators.loc["gas_turbine_2030", "p_nom"] == 45.0
     assert not network.generators.loc["wind_2030", "p_nom_extendable"]
     assert network.generators.loc["gas_turbine_2030", "capital_cost"] == 0.0
     assert network.generators.loc["load_shedding", "p_nom"] == 1000.0
+    assert network.storage_units.loc["li_ion_6h_2030", "p_nom"] == 78.0
+    assert not network.storage_units.loc["li_ion_6h_2030", "p_nom_extendable"]
+    assert network.storage_units.loc["li_ion_6h_2030", "capital_cost"] == 0.0
 
 
 def test_dispatch_outputs_are_staged_inside_repo():

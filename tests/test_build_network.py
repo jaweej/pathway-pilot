@@ -25,6 +25,16 @@ def test_network_contains_core_components():
     assert network.generators.loc["gas_turbine_cc_2030", "carrier"] == "gas_turbine_cc"
     assert list(network.investment_periods) == [2030, 2040, 2050]
 
+    assert {"li_ion_6h_2030", "li_ion_6h_2040", "li_ion_6h_2050"}.issubset(
+        network.storage_units.index
+    )
+    battery = network.storage_units.loc["li_ion_6h_2030"]
+    assert battery["carrier"] == "battery"
+    assert battery["max_hours"] == 6
+    assert battery["battery_technology"] == "li_ion_6h"
+    assert battery["p_nom_extendable"]
+    assert battery["cyclic_state_of_charge"]
+
 
 def test_combined_dk_nl_network_has_fixed_lossless_interconnector():
     cfg = with_active_model(load_config(Path("config/model_config.yaml")), "DK_NL")

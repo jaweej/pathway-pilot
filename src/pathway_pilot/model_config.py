@@ -32,6 +32,13 @@ class ModelCase:
 
 
 @dataclass(frozen=True)
+class BatteryTechnology:
+    duration_hours: float
+    round_trip_efficiency: float
+    investable_periods: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class ModelConfig:
     active_model: str
     climate_years: list[int]
@@ -48,6 +55,7 @@ class ModelConfig:
     load_shedding_variable_cost_eur_per_mwh: float
     load_shedding_max_capacity_mw: float
     capacity_limits_mw: dict[str, float]
+    battery_technologies: dict[str, BatteryTechnology]
 
 
 def _int_keyed_float_dict(values: dict[Any, Any], name: str) -> dict[int, float]:
@@ -96,6 +104,28 @@ def _parse_model_case(name: str, case: dict[str, Any]) -> ModelCase:
     )
 
 
+def _parse_battery_technologies(
+    raw: dict[str, Any] | None, investment_periods: list[int]
+) -> dict[str, BatteryTechnology]:
+    if not raw:
+        return {}
+    technologies = {}
+    for tech_id, tech in raw.items():
+        investable = tech.get("investable_periods")
+        candidate_periods = (
+            [int(period) for period in investable]
+            if investable is not None
+            else list(investment_periods)
+        )
+        periods = tuple(period for period in candidate_periods if period in investment_periods)
+        technologies[str(tech_id)] = BatteryTechnology(
+            duration_hours=float(tech["duration_hours"]),
+            round_trip_efficiency=float(tech.get("round_trip_efficiency", 0.86)),
+            investable_periods=periods,
+        )
+    return technologies
+
+
 def load_config(path: str | Path) -> ModelConfig:
     with Path(path).open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
@@ -137,6 +167,9 @@ def load_config(path: str | Path) -> ModelConfig:
         )
     load_shedding = raw["load_shedding"]
     capacity_limits = {str(key): float(value) for key, value in raw["capacity_limits_mw"].items()}
+    battery_technologies = _parse_battery_technologies(
+        raw.get("battery_technologies"), investment_periods
+    )
 
     missing_weights = set(investment_periods) - set(period_weights)
     missing_gas_prices = set(investment_periods) - set(gas_prices)
@@ -163,6 +196,7 @@ def load_config(path: str | Path) -> ModelConfig:
         ),
         load_shedding_max_capacity_mw=float(load_shedding["max_capacity_mw"]),
         capacity_limits_mw=capacity_limits,
+        battery_technologies=battery_technologies,
     )
 
 

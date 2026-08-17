@@ -88,9 +88,10 @@ def fixed_capacity_map(
 
 
 def apply_fixed_capacities(network, capacities_mw: dict[str, float]) -> None:
-    missing = sorted(set(capacities_mw) - set(network.generators.index))
+    known = set(network.generators.index) | set(network.storage_units.index)
+    missing = sorted(set(capacities_mw) - known)
     if missing:
-        raise ValueError(f"Fixed capacity generators not found in target network: {missing}")
+        raise ValueError(f"Fixed capacity components not found in target network: {missing}")
 
     dispatchable = network.generators["carrier"] != "load_shedding"
     network.generators.loc[dispatchable, "p_nom_extendable"] = False
@@ -98,8 +99,18 @@ def apply_fixed_capacities(network, capacities_mw: dict[str, float]) -> None:
     network.generators.loc[dispatchable, "p_nom_min"] = 0.0
     network.generators.loc[dispatchable, "p_nom_max"] = 0.0
     network.generators.loc[dispatchable, "capital_cost"] = 0.0
-    for generator, capacity_mw in capacities_mw.items():
-        network.generators.loc[generator, "p_nom"] = capacity_mw
+
+    network.storage_units["p_nom_extendable"] = False
+    network.storage_units["p_nom"] = 0.0
+    network.storage_units["p_nom_min"] = 0.0
+    network.storage_units["p_nom_max"] = 0.0
+    network.storage_units["capital_cost"] = 0.0
+
+    for name, capacity_mw in capacities_mw.items():
+        if name in network.storage_units.index:
+            network.storage_units.loc[name, "p_nom"] = capacity_mw
+        else:
+            network.generators.loc[name, "p_nom"] = capacity_mw
 
 
 def solve_dispatch_network(network, solver_name: str = "highs") -> tuple[str, str]:

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pathway_pilot.model_config import load_config, with_active_model
+from pathway_pilot.model_config import _parse_battery_technologies, load_config, with_active_model
 
 
 def test_config_loads_period_weights():
@@ -21,6 +21,23 @@ def test_config_loads_period_weights():
     assert cfg.gas_price_eur_per_mwh_fuel[2050] == 85 * 3.6 / 7.47
     assert cfg.capacity_limits_mw["wind"] > 0
     assert cfg.capacity_limits_mw["gas_turbine_cc"] > 0
+    assert cfg.battery_technologies["li_ion_6h"].duration_hours == 6
+    assert cfg.battery_technologies["li_ion_6h"].round_trip_efficiency == 0.86
+    assert cfg.battery_technologies["li_ion_6h"].investable_periods == (2030, 2040, 2050)
+
+
+def test_battery_technology_investable_periods_can_be_restricted():
+    cfg = load_config(Path("config/model_config.yaml"))
+    raw = {
+        "li_ion_6h": {"duration_hours": 6},
+        "li_ion_10h": {"duration_hours": 10, "investable_periods": [2040, 2050, 2060]},
+    }
+
+    technologies = _parse_battery_technologies(raw, cfg.investment_periods)
+
+    assert technologies["li_ion_6h"].investable_periods == (2030, 2040, 2050)
+    assert technologies["li_ion_10h"].duration_hours == 10
+    assert technologies["li_ion_10h"].investable_periods == (2040, 2050)
 
 
 def test_config_can_switch_to_combined_dk_nl_case():

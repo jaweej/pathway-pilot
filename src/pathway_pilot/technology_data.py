@@ -53,6 +53,15 @@ TECH_FILES = {
     "gas_turbine_cc": "gas_turbine_cc_steam_extract.parquet",
 }
 
+# Batteries are not sourced from TechCat; these are reasonable placeholder
+# Li-ion BESS assumptions (installed cost per MWh of energy capacity,
+# roughly tracking published cost-decline projections) used for every
+# configured battery_technologies entry regardless of its duration.
+BATTERY_ENERGY_CAPEX_EUR_PER_MWH = {2030: 160_000.0, 2040: 120_000.0, 2050: 100_000.0}
+BATTERY_FIXED_OM_FRACTION_OF_CAPEX = 0.02
+BATTERY_MARGINAL_COST_EUR_PER_MWH = 0.5
+BATTERY_LIFETIME_YEARS = 15
+
 
 def _annuity(discount_rate: float, lifetime_years: float) -> float:
     if discount_rate == 0:
@@ -117,20 +126,55 @@ def _gas_assumption(
     return TechnologyAssumption(capital_costs, unit_capex, marginal_costs, lifetime)
 
 
+def _nearest_period_value(values: dict[int, float], period: int) -> float:
+    if period in values:
+        return float(values[period])
+    earlier = [year for year in values if year <= period]
+    if earlier:
+        return float(values[max(earlier)])
+    return float(values[min(values)])
+
+
+def _battery_assumption(
+    cfg: ModelConfig, duration_hours: float, periods: list[int]
+) -> TechnologyAssumption:
+    capital_costs = {}
+    unit_capex = {}
+    marginal_costs = {}
+    for period in periods:
+        energy_capex = _nearest_period_value(BATTERY_ENERGY_CAPEX_EUR_PER_MWH, period)
+        unit_capex_per_mw = energy_capex * duration_hours
+        fixed_om = unit_capex_per_mw * BATTERY_FIXED_OM_FRACTION_OF_CAPEX
+        capital_costs[period] = (
+            unit_capex_per_mw * _annuity(cfg.discount_rate, BATTERY_LIFETIME_YEARS) + fixed_om
+        )
+        unit_capex[period] = unit_capex_per_mw
+        marginal_costs[period] = BATTERY_MARGINAL_COST_EUR_PER_MWH
+    return TechnologyAssumption(capital_costs, unit_capex, marginal_costs, BATTERY_LIFETIME_YEARS)
+
+
 def load_technology_assumptions(
     cfg: ModelConfig,
     tech_dir: str | Path | None = None,
 ) -> dict[str, TechnologyAssumption]:
     base = Path(tech_dir) if tech_dir is not None else DEV_DATA_DIR / "pathway-pilot" / "tech"
     if not all((base / file_name).exists() for file_name in TECH_FILES.values()):
-        return FALLBACK_ASSUMPTIONS
+        assumptions = dict(FALLBACK_ASSUMPTIONS)
+    else:
+        tables = {
+            name: pd.read_parquet(base / file_name) for name, file_name in TECH_FILES.items()
+        }
+        assumptions = {
+            "wind": _renewable_assumption(cfg, tables["wind"], cfg.investment_periods),
+            "solar": _renewable_assumption(cfg, tables["solar"], cfg.investment_periods),
+            "gas_turbine": _gas_assumption(cfg, tables["gas_turbine"], cfg.investment_periods),
+            "gas_turbine_cc": _gas_assumption(
+                cfg, tables["gas_turbine_cc"], cfg.investment_periods
+            ),
+        }
 
-    tables = {name: pd.read_parquet(base / file_name) for name, file_name in TECH_FILES.items()}
-    return {
-        "wind": _renewable_assumption(cfg, tables["wind"], cfg.investment_periods),
-        "solar": _renewable_assumption(cfg, tables["solar"], cfg.investment_periods),
-        "gas_turbine": _gas_assumption(cfg, tables["gas_turbine"], cfg.investment_periods),
-        "gas_turbine_cc": _gas_assumption(
-            cfg, tables["gas_turbine_cc"], cfg.investment_periods
-        ),
-    }
+    for tech_id, battery_tech in cfg.battery_technologies.items():
+        assumptions[tech_id] = _battery_assumption(
+            cfg, battery_tech.duration_hours, cfg.investment_periods
+        )
+    return assumptions

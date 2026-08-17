@@ -8,6 +8,7 @@ from pathway_pilot.outputs import (
     hourly_dispatch,
     hourly_interconnector_flows,
     hourly_prices,
+    hourly_storage_state_of_charge,
     optimal_capacities,
     write_model_outputs,
 )
@@ -41,6 +42,11 @@ def test_output_tables_have_expected_columns():
     assert set(["period", "timestep", "bus", "price_eur_per_mwh"]).issubset(
         hourly_prices(network).columns
     )
+    assert set(
+        ["period", "timestep", "storage_unit", "state_of_charge_mwh"]
+    ).issubset(hourly_storage_state_of_charge(network).columns)
+    assert (optimal_capacities(network)["carrier"] == "battery").any()
+    assert (hourly_dispatch(network)["carrier"] == "battery").any()
 
 
 def test_write_model_outputs_creates_three_parquet_files(monkeypatch):
@@ -61,4 +67,5 @@ def test_write_model_outputs_creates_three_parquet_files(monkeypatch):
         "hourly_dispatch.parquet",
         "hourly_interconnector_flows.parquet",
         "hourly_prices.parquet",
+        "hourly_storage_state_of_charge.parquet",
     ]
