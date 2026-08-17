@@ -24,6 +24,7 @@ def _normalise_string_columns(network: pypsa.Network) -> None:
         network.buses,
         network.loads,
         network.generators,
+        network.storage_units,
         network.links,
         network.carriers,
     ]:
@@ -32,8 +33,8 @@ def _normalise_string_columns(network: pypsa.Network) -> None:
                 frame[column] = frame[column].astype("object")
 
 
-def _set_unit_capex(network: pypsa.Network, generator_name: str, value: float) -> None:
-    network.generators.loc[generator_name, "unit_capex_eur_per_mw"] = float(value)
+def _set_unit_capex(frame: pd.DataFrame, name: str, value: float) -> None:
+    frame.loc[name, "unit_capex_eur_per_mw"] = float(value)
 
 
 def _component_name(bus: str, technology: str, build_year: int, multi_bus: bool) -> str:
@@ -61,6 +62,7 @@ def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
         "solar",
         "gas",
         "gas_turbine_cc",
+        "battery",
         "load_shedding",
         "interconnector",
     ]:
@@ -96,7 +98,7 @@ def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
                     lifetime=tech.lifetime_years,
                 )
                 _set_unit_capex(
-                    network,
+                    network.generators,
                     generator_name,
                     _period_value(tech.unit_capex_by_period, build_year),
                 )
@@ -118,7 +120,7 @@ def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
                 lifetime=gas_tech.lifetime_years,
             )
             _set_unit_capex(
-                network,
+                network.generators,
                 generator_name,
                 _period_value(gas_tech.unit_capex_by_period, build_year),
             )
@@ -140,10 +142,43 @@ def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
                 lifetime=gas_cc_tech.lifetime_years,
             )
             _set_unit_capex(
-                network,
+                network.generators,
                 generator_name,
                 _period_value(gas_cc_tech.unit_capex_by_period, build_year),
             )
+
+    for tech_id, battery_tech in cfg.battery_technologies.items():
+        battery_assumption = technology_assumptions[tech_id]
+        round_trip_efficiency = battery_tech.round_trip_efficiency**0.5
+        for bus in bus_names:
+            for build_year in battery_tech.investable_periods:
+                storage_name = _component_name(bus, tech_id, build_year, multi_bus)
+                network.add(
+                    "StorageUnit",
+                    storage_name,
+                    bus=bus,
+                    carrier="battery",
+                    p_nom_extendable=True,
+                    p_nom_max=cfg.capacity_limits_mw[tech_id],
+                    max_hours=battery_tech.duration_hours,
+                    efficiency_store=round_trip_efficiency,
+                    efficiency_dispatch=round_trip_efficiency,
+                    cyclic_state_of_charge=True,
+                    capital_cost=_period_value(
+                        battery_assumption.capital_cost_by_period, build_year
+                    ),
+                    marginal_cost=_period_value(
+                        battery_assumption.marginal_cost_by_period, build_year
+                    ),
+                    build_year=build_year,
+                    lifetime=battery_assumption.lifetime_years,
+                )
+                network.storage_units.loc[storage_name, "battery_technology"] = tech_id
+                _set_unit_capex(
+                    network.storage_units,
+                    storage_name,
+                    _period_value(battery_assumption.unit_capex_by_period, build_year),
+                )
 
     for bus in bus_names:
         generator_name = f"{bus}_load_shedding" if multi_bus else "load_shedding"
@@ -155,7 +190,7 @@ def build_network(cfg: ModelConfig, data: ModelInputs) -> pypsa.Network:
             p_nom=cfg.load_shedding_max_capacity_mw,
             marginal_cost=cfg.load_shedding_variable_cost_eur_per_mwh,
         )
-        _set_unit_capex(network, generator_name, 0.0)
+        _set_unit_capex(network.generators, generator_name, 0.0)
 
     for interconnector in cfg.interconnectors:
         network.add(

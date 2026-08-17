@@ -1,7 +1,12 @@
 import pandas as pd
 
 from pathway_pilot.model_config import load_config
-from pathway_pilot.technology_data import _gas_assumption, _renewable_assumption
+from pathway_pilot.technology_data import (
+    _battery_assumption,
+    _gas_assumption,
+    _renewable_assumption,
+    load_technology_assumptions,
+)
 
 
 SCHEMA_COLUMNS = [
@@ -54,3 +59,24 @@ def test_technology_assumptions_use_techcat_schema_and_gas_price_formula():
     assert gas_assumption.marginal_cost_by_period[2030] == (80 * 3.6 / 7.47) / 0.4 + 4
     assert gas_assumption.unit_capex_by_period[2050] == 450_000
     assert gas_assumption.marginal_cost_by_period[2050] == (85 * 3.6 / 7.47) / 0.6 + 2
+
+
+def test_battery_assumption_scales_capex_with_duration():
+    cfg = load_config("config/model_config.yaml")
+
+    six_hour = _battery_assumption(cfg, duration_hours=6, periods=cfg.investment_periods)
+    ten_hour = _battery_assumption(cfg, duration_hours=10, periods=cfg.investment_periods)
+
+    assert six_hour.unit_capex_by_period[2030] == 160_000 * 6
+    assert six_hour.lifetime_years == 15
+    assert ten_hour.unit_capex_by_period[2030] == 160_000 * 10
+    assert ten_hour.unit_capex_by_period[2030] / six_hour.unit_capex_by_period[2030] == 10 / 6
+
+
+def test_load_technology_assumptions_includes_configured_battery_technologies():
+    cfg = load_config("config/model_config.yaml")
+
+    assumptions = load_technology_assumptions(cfg, tech_dir="does-not-exist")
+
+    assert "li_ion_6h" in assumptions
+    assert assumptions["li_ion_6h"].unit_capex_by_period[2030] == 160_000 * 6

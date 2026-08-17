@@ -15,7 +15,7 @@ from pathway_pilot.model_config import load_config
 
 OUTPUT_DIR = DEV_DATA_DIR / "pathway-pilot" / "output"
 DASHBOARD_PATH = OUTPUT_DIR / "pypsa_output_dashboard.html"
-CAPACITY_CARRIERS = ["gas_turbine_cc", "gas", "wind", "solar"]
+CAPACITY_CARRIERS = ["gas_turbine_cc", "gas", "wind", "solar", "battery"]
 DISPATCH_CARRIERS = [*CAPACITY_CARRIERS, "load_shedding"]
 GAS_CARRIERS = ["gas", "gas_turbine_cc"]
 CONFIG_PATH = Path("config/model_config.yaml")
@@ -93,6 +93,7 @@ WEEK_COLUMNS = [
     "solar",
     "gas",
     "gas_turbine_cc",
+    "battery",
     "load_shedding",
     "interconnector_import",
     "interconnector_export",
@@ -322,6 +323,7 @@ def _dashboard_payload(
             "gas": float(group["gas"].clip(lower=0).sum()),
             "wind": float(group["wind"].clip(lower=0).sum()),
             "solar": float(group["solar"].clip(lower=0).sum()),
+            "battery": float(group["battery"].clip(lower=0).sum()),
             "load_shedding": shed_energy_mwh,
         }
         generation_total = sum(generation_totals.values())
@@ -1187,10 +1189,10 @@ const OUTAGE_COMPARISON = APP_DATA.outageComparison || null;
 let DATA;
 let activeWeekPreset = "shed";
 let activeOutageWeekPreset = "shed";
-const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", gas_turbine_cc: "#00a6a6", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058", interconnector_import: "#8a8f98", interconnector_export: "#ef8354", consumer_surplus: "#2f80ed", producer_surplus: "#18a058", congestion_rent: "#ef8354", sew: "#111827" };
+const COLORS = { wind: "#2f80ed", solar: "#f2b705", gas: "#7a5195", gas_turbine_cc: "#00a6a6", battery: "#8a5cf5", load_shedding: "#c43d3d", demand: "#111827", residual_load: "#18a058", interconnector_import: "#8a8f98", interconnector_export: "#ef8354", consumer_surplus: "#2f80ed", producer_surplus: "#18a058", congestion_rent: "#ef8354", sew: "#111827" };
 const YEAR_COLORS = ["#111827", "#2f80ed", "#18a058", "#c43d3d", "#7a5195"];
 const COUNTRY_COLORS = ["#111827", "#2f80ed", "#18a058", "#c43d3d", "#7a5195", "#00a6a6"];
-const LABELS = { wind: "Wind", solar: "Solar", gas: "Gas turbine", gas_turbine_cc: "Gas turbine CC", load_shedding: "Load shedding", demand: "Demand", interconnector_import: "Import", interconnector_export: "Export" };
+const LABELS = { wind: "Wind", solar: "Solar", gas: "Gas turbine", gas_turbine_cc: "Gas turbine CC", battery: "Battery", load_shedding: "Load shedding", demand: "Demand", interconnector_import: "Import", interconnector_export: "Export" };
 const tooltip = document.getElementById("tooltip");
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
 const fmt0 = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });

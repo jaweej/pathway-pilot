@@ -47,3 +47,15 @@ capacity_limits_mw:
   solar: 50000
   gas_turbine: 100000
   gas_turbine_cc: 100000
+  li_ion_6h: 20000
+
+# Each entry is an investable battery technology. duration_hours sets its
+# fixed energy/power ratio (max_hours in PyPSA). investable_periods is
+# optional; omit it to allow building in every investment_period, or list
+# a subset to restrict when that technology can be newly built (e.g. a
+# longer-duration technology only investable from 2040 onward). Add more
+# entries here to model multiple battery types side by side.
+battery_technologies:
+  li_ion_6h:
+    duration_hours: 6
+    round_trip_efficiency: 0.86
